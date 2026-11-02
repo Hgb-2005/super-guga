@@ -931,6 +931,8 @@ class AgentChatWindow(QDialog):
                 self.voice.resolve_task(call_id,dict(ok=True,
                     answer='收到，这句会作为当前任务的补充要求保留；我没有把它当成新任务，也不会中断正在执行的步骤。'))
             return
+        # Preserve the existing confirmation for complex delegated work and publishing.
+        # Everyday desktop actions go straight to the local agent.
         if not self._pending_image and not confirmed:
             from core.chat_answer import uses_task
             if uses_task(request,self.route_combo.currentData(),False):
@@ -939,16 +941,15 @@ class AgentChatWindow(QDialog):
                 from core.task_feedback import acknowledgement
                 workflow=self.runtime.workflows.match(request) or workflow_for(request)
                 route=choose_task_route(request,False,self.store.preference('execution_backend') or 'auto',workflow)
-                owner='DSH 深度执行器' if route.get('executor')=='dsh' else '咕嘎本地视觉智能体'
-                understanding=acknowledgement(request).replace('我现在开始处理。','')
-                question=(understanding+'这是一个复杂任务。我理解的是：由'+owner+'负责执行，我负责盯进度、核对回执并随时回答你。'
-                    '确认无误请说“确认执行”；不执行请说“取消”。')
-                self._pending_execution=dict(text=request,created=time.monotonic())
-                self.status.setText('等待确认任务理解')
-                self.store.append(self.active_id,'system',question)
-                self._show_active_bubble(question)
-                self.voice.resolve_task(call_id,dict(ok=True,answer=question,execution_pending=False))
-                return
+                if route.get('executor')=='dsh' or any(word in request for word in ('上传','发布','投稿')):
+                    owner='DSH 深度执行器' if route.get('executor')=='dsh' else '咕嘎本地视觉智能体'
+                    question=acknowledgement(request).replace('我现在开始处理。','')+('这是一个复杂任务，由'+owner+'负责执行。确认无误请说“确认执行”；不执行请说“取消”。')
+                    self._pending_execution=dict(text=request,created=time.monotonic())
+                    self.status.setText('等待确认任务理解')
+                    self.store.append(self.active_id,'system',question)
+                    self._show_active_bubble(question)
+                    self.voice.resolve_task(call_id,dict(ok=True,answer=question,execution_pending=False))
+                    return
         self._voice_task = (self.voice, call_id)
         self._task_control.reset()
         messages = self.store.messages(self.active_id, 1)

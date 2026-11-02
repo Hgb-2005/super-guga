@@ -20,6 +20,11 @@ class DemoTests(unittest.TestCase):
         self.assertTrue(command['matched']);self.assertEqual(command['report_query'],'量子计算')
     def test_plain_typing_is_not_misrouted_to_search(self):
         self.assertFalse(match('打开浏览器输入一段自我介绍')['matched'])
+    def test_browser_close_is_a_local_fast_command(self):
+        command=match('关闭浏览器')
+        self.assertTrue(command['matched'])
+        self.assertEqual(command['action'],'close_browser')
+        self.assertEqual(command['priority'],'fast')
     def test_singing_only_on_request_defaults_to_qingtian(self):
         self.assertEqual(match('唱歌')['target'],'晴天')
         self.assertFalse(match('我觉得晴天很好听')['matched'])

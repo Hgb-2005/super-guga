@@ -123,6 +123,9 @@ def match(text):
     if value in STOP_PHRASES:
         return dict(prefix,matched=True,action='stop_call',silent=True,priority='critical',
                     message='结束实时语音通话')
+    close=re.fullmatch(r'(?:把)?(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:关掉|关闭|退出)(?:吧|一下)?|(?:关闭|关掉|退出)(?:一下)?\s*(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:吧|一下)?',value,re.I)
+    if close:
+        return dict(prefix,matched=True,action='close_browser',kind='close_browser',target=(close.group(1) or close.group(2)).lower(),silent=True,priority='fast')
     match=re.fullmatch(r'(?:在浏览器)?(?:打开|启动|访问|前往)(?:一下)?(?:网页|网站|页面)?\s*(.+)',value)
     if match:
         target=match.group(1).strip().strip('“”"\' ')
@@ -163,6 +166,32 @@ def match(text):
     return dict(matched=False,action='none',silent=False)
 
 
+def _close_browser(target):
+    import win32gui, win32con
+    from core.window_inventory import list_windows
+    from core.browser_launch import default_executable
+    names={'edge':'msedge.exe','chrome':'chrome.exe','firefox':'firefox.exe','豆包浏览器':'doubao.exe'}
+    windows=list_windows('浏览器',200)
+    wanted=names.get(target)
+    if wanted:
+        windows=[w for w in windows if w.get('process_name','').lower()==wanted]
+    if not windows:return dict(ok=False,error='没有检测到正在运行的目标浏览器')
+    selected=next((w for w in windows if w.get('foreground')),None)
+    if not selected and not wanted:
+        default=default_executable()
+        exe=Path(str(default)).name.lower() if default else ''
+        selected=next((w for w in windows if w.get('process_name','').lower()==exe),None)
+    if not selected:
+        selected=windows[0] if wanted or len(windows)==1 else None
+    if not selected:return dict(ok=False,error='检测到多个浏览器，请指定要关闭哪一个')
+    hwnd=selected['hwnd']
+    win32gui.PostMessage(hwnd,win32con.WM_CLOSE,0,0)
+    for _ in range(15):
+        time.sleep(.1)
+        if not win32gui.IsWindow(hwnd):return dict(ok=True,message='浏览器窗口已关闭')
+    return dict(ok=False,error='已请求关闭浏览器，但窗口仍存在，请检查是否有未保存内容或确认提示')
+
+
 def execute(result):
     started=time.perf_counter()
     try:
@@ -179,6 +208,7 @@ def _execute(result):
     values=dict(result or {})
     if not values.get('matched'):return dict(ok=False,error='没有匹配的快速命令')
     if values.get('action')=='stop_call':return dict(ok=True,message='结束实时语音通话')
+    if values.get('action')=='close_browser':return _close_browser(values['target'])
     if values.get('kind')=='url':
         return dict(ok=True,**_open_url(values['target']))
     if values.get('kind')=='app':
