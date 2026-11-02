@@ -61,5 +61,26 @@ class DshTests(unittest.TestCase):
         manager=DshManager();self.assertFalse(manager.status()['running'])
         with self.assertRaises(ValueError):manager.start('',seconds=30)
 
+    def test_sidecar_receives_member_method_memory_and_emits_owner(self):
+        from core.agent_identity import PERSONALITIES
+        lines=['{"type":"final","text":"尚未验证"}\n']
+        proc=FakeProc(lines);manager=DshManager();events=[];manager.event.connect(events.append)
+        with patch('core.dsh_worker.subprocess.Popen',return_value=proc):
+            manager.start('审查项目',conversation_id='fish-chat',seconds=30,
+                profile=dict(agent_id='002',personality=PERSONALITIES['002']),memory_context='FISH_ONLY_MEMORY')
+            manager.thread.join(3)
+            APP.processEvents()
+        self.assertIn('FISH_ONLY_MEMORY',proc.stdin.text)
+        self.assertIn('先复现问题',proc.stdin.text)
+        self.assertTrue(events);self.assertTrue(all(e['agent_id']=='002' for e in events))
+
+    def test_launch_failure_still_emits_exactly_one_terminal_event(self):
+        manager=DshManager();events=[];manager.event.connect(events.append)
+        with patch('core.dsh_worker.subprocess.Popen',side_effect=FileNotFoundError):
+            manager.start('测试',conversation_id='c1',seconds=30)
+            manager.thread.join(3);APP.processEvents()
+        done=[e for e in events if e.get('type')=='dsh_completed']
+        self.assertEqual(len(done),1);self.assertFalse(done[0]['ok'])
+
 
 if __name__=='__main__':unittest.main()

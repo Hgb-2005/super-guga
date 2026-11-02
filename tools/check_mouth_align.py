@@ -7,7 +7,7 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 from PIL import Image
 
-SRC = r'C:\Users\Admin（无密码）\Desktop\图片库\咕嘎说话动作'
+SRC = os.environ.get('GUGA_TALK_FRAMES', 'samples/talk-frames')
 EXCLUDE = ('041507d1', '7771be0b')
 
 

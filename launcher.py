@@ -30,7 +30,7 @@ def _prepare_qt():
     # 1. 优先尝试官方 Qt
     official_bin = os.path.join(QT_DIR, 'bin')
     official_plugins = os.path.join(QT_DIR, 'plugins')
-    if os.path.isdir(official_bin) and os.path.isdir(os.path.join(official_plugins, 'platforms')):
+    if not getattr(sys,'frozen',False) and os.path.isdir(official_bin) and os.path.isdir(os.path.join(official_plugins, 'platforms')):
         qt_bin = official_bin
         qt_plugins = official_plugins
     
@@ -83,7 +83,7 @@ def _show_error(text):
 def main():
     # 把输出重定向到 startup.log（pythonw 默认无控制台）
     try:
-        logf = open(LOG_PATH, 'w', encoding='utf-8')
+        logf = open(LOG_PATH, 'wb')
         sys.stdout = io.TextIOWrapper(logf, encoding='utf-8')
         sys.stderr = sys.stdout
     except Exception:
@@ -110,7 +110,7 @@ def main():
             if not ctypes.windll.shell32.IsUserAnAdmin():
                 ret = ctypes.windll.shell32.ShellExecuteW(
                     None, 'runas', sys.executable,
-                    __import__('subprocess').list2cmdline([os.path.join(ROOT, 'launcher.py')]+
+                    __import__('subprocess').list2cmdline(([] if getattr(sys,'frozen',False) else [os.path.join(ROOT, 'launcher.py')])+
                         [arg for arg in sys.argv[1:] if arg in ('--voice','--bg-live')]), ROOT, 1)
                 # ShellExecuteW 返回 > 32 表示成功; <= 32 表示失败(用户拒绝UAC等)
                 if ret and ret > 32:
@@ -135,7 +135,10 @@ def main():
 
     try:
         # 等价于 python main.py
-        runpy.run_path(os.path.join(ROOT, 'main.py'), run_name='__main__')
+        if getattr(sys,'frozen',False):
+            from main import main as start_pet
+            start_pet()
+        else:runpy.run_path(os.path.join(ROOT, 'main.py'), run_name='__main__')
     except SystemExit:
         pass
     except Exception:

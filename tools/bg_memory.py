@@ -16,5 +16,5 @@ if __name__ == '__main__':
         print(json.dumps(dict(ok=True,snapshot=snapshot),ensure_ascii=False))
     except Exception as exc:
         error = str(exc)[:240] if isinstance(exc,RuntimeError) else 'HearthMirror 加载或读取失败；未写入客户端'
-        print(json.dumps(dict(ok=False,error=error),ensure_ascii=False))
+        print(json.dumps(dict(ok=False,code=getattr(exc,'code','read_failed'),error=error),ensure_ascii=False))
         sys.exit(2)

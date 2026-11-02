@@ -65,54 +65,79 @@ class LocalSpeakerGate:
         if not self.model_path.is_file():raise ValueError('缺少声纹模型；请运行 tools/download_speaker_model.py')
         self.owner=np.asarray(np.load(self.profile_path),dtype=np.float32).reshape(-1)
         metadata={}
-        try:metadata=json.loads(META_PATH.read_text(encoding='utf-8'))
+        try:metadata=json.loads(self.profile_path.with_suffix('.json').read_text(encoding='utf-8'))
         except (OSError,ValueError):pass
         self.threshold=float(threshold if threshold is not None else metadata.get('threshold',0.30))
         if str(self.model_path)!=str(MODEL_PATH):_get_extractor(self.model_path)
         else:_get_extractor()
         self.lock=threading.Lock()
-        self.recent=[];self.pending=[];self.last_eval=0.;self.verified_until=0.;self.last_speech=0.
+        self.recent=[];self.pending=[];self.last_eval=0.;self.last_speech=0.
+        self.voiced_samples=0
         self.verified=False;self.state='listening';self.last_score=0.;self._rejections=0
 
     def embedding(self,samples):
         return _embedding(samples,self.model_path)
 
-    def process_pcm(self,raw,now=None):
-        """Return exactly-current bytes when owner, otherwise silence; pending owner audio is flushed."""
+    def reset(self):
+        self.recent.clear();self.pending.clear();self.voiced_samples=0
+        self.verified=False;self.last_eval=0.;self.last_speech=0.;self.state='listening';self._rejections=0
+
+    def process_pcm(self,raw,now=None,blocked=False):
+        """Verify a buffered phrase, then release its original PCM exactly once.
+
+        Short pauses belong to the same phrase. Rejected/unverified PCM never
+        leaves this gate; identity expires after 700 ms of actual silence.
+        Capture timestamps, not inference completion times, delimit phrases.
+        """
         now=time.monotonic() if now is None else now
         data=np.frombuffer(raw,dtype=np.int16).astype(np.float32)/32768.0
-        duration=len(data)/SAMPLE_RATE
         rms=float(np.sqrt(np.mean(data*data))) if len(data) else 0.
-        speech=rms>=.008
+        speech=rms>=.004
         silent=b'\x00'*len(raw)
         with self.lock:
+            if blocked:
+                self.reset()
+                return silent
+            if not speech and not self.pending and not self.verified:
+                return silent
+            if not speech and now-self.last_speech>=.70:
+                discarded=sum(len(x) for x in self.pending)
+                self.reset()
+                return b'\x00'*(discarded+len(raw))
             self.recent.append(data)
-            keep=int(SAMPLE_RATE*1.6)
+            keep=int(SAMPLE_RATE*2.0)
             while sum(len(x) for x in self.recent)>keep:self.recent.pop(0)
-            window=np.concatenate(self.recent[-24:]) if self.recent else np.zeros(0,dtype=np.float32)
+            if self.verified:
+                if speech:self.last_speech=now
+                return bytes(raw)
+            # Buffer both speech and its brief internal pauses. Never append the
+            # current block again after successful verification.
+            self.pending.append(bytes(raw))
             if speech:
                 self.last_speech=now
-                if not self.verified:self.pending.append(bytes(raw))
+                self.voiced_samples+=len(data)
+                window=np.concatenate(self.recent)
                 if self._can_eval(now,window):
-                    score=cosine(self.owner,self.embedding(window[-int(SAMPLE_RATE*1.25):]))
+                    score=cosine(self.owner,self.embedding(window))
                     self.last_score=score
                     if score>=self.threshold:
-                        self.verified=True;self.verified_until=now+3.;self.state='owner'
+                        self.verified=True;self.state='owner'
                         release=b''.join(self.pending);self.pending.clear()
-                        return release+bytes(raw)
+                        return release
                     self._rejections+=1
-                    if sum(len(x) for x in self.pending)>=1.2*SAMPLE_RATE*2 or self._rejections>=2:
-                        self.pending.clear();self.verified=False;self.state='rejected'
-            elif not self.verified:
-                self.pending.clear()
-                if now-self.last_speech>.55:self.state='listening'
-            if self.verified and now>self.verified_until+2.5:
-                self.verified=False;self._rejections=0;self.state='listening'
-            return bytes(raw) if self.verified else silent
+                    self.state='rejected'
+            # Bound rejected buffers; allow a longer sample to verify instead of
+            # deleting the beginning after two short, inconclusive comparisons.
+            if sum(len(x) for x in self.pending)>=3*SAMPLE_RATE*2:
+                discarded=sum(len(x) for x in self.pending)
+                self.reset();self.state='rejected'
+                return b'\x00'*discarded
+            return b''
 
     def _can_eval(self,now,window):
         if now-self.last_eval<.32:return False
-        if len(window)<int(SAMPLE_RATE*.55):return False
+        if self.voiced_samples<int(SAMPLE_RATE*.64):return False
+        if len(window)<int(SAMPLE_RATE*.64):return False
         self.last_eval=now;return True
 
 
@@ -136,6 +161,7 @@ class SpeakerGate:
     def __init__(self,profile_path=PROFILE_PATH,model_path=MODEL_PATH,threshold=None,emit=None):
         import base64,queue,subprocess,sys
         self.emit=emit or (lambda data:None);self.state='listening';self.last_score=0.;self._closed=False
+        self.error='';self.stats={};self._max_queue=0
         worker=ROOT/'tools/speaker_worker.py'
         self.proc=subprocess.Popen([sys.executable,'-X','utf8',str(worker)],stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,encoding='utf-8',bufsize=1,
@@ -152,22 +178,34 @@ class SpeakerGate:
         if not line:raise RuntimeError('声纹进程意外退出')
         return json.loads(line)
 
-    def submit(self,raw):
+    def submit(self,raw,blocked=False):
         if self._closed:return False
-        try:self._queue.put_nowait(bytes(raw));return True
-        except Exception:return False
+        if self.error:return False
+        import queue
+        try:
+            self._queue.put_nowait((bytes(raw),time.monotonic(),bool(blocked)))
+            self._max_queue=max(self._max_queue,self._queue.qsize())
+            return True
+        except queue.Full:
+            self.error='声纹处理队列已满，已停止收音，避免丢字；请检查 CPU 占用后重新开启通话'
+            self.state='error'
+            return False
 
     def _run(self):
         import base64,time
         while not self._closed:
-            try:raw=self._queue.get(timeout=.2)
+            try:raw,captured,blocked=self._queue.get(timeout=.2)
             except Exception:continue
             try:
-                reply=self._exchange(dict(cmd='audio',pcm=base64.b64encode(raw).decode('ascii')))
+                if self.error:break
+                if time.monotonic()-captured>1.2:raise RuntimeError('声纹处理延迟超过 1.2 秒，请检查 CPU 占用后重开通话')
+                reply=self._exchange(dict(cmd='audio',pcm=base64.b64encode(raw).decode('ascii'),now=captured,blocked=blocked))
+                if not reply.get('ok'):raise RuntimeError(reply.get('error','声纹处理失败'))
                 self.state=reply.get('state','listening');self.last_score=float(reply.get('score',0))
+                self.stats=dict(reply.get('stats',{}),queue_depth=self._queue.qsize(),max_queue_depth=self._max_queue)
                 self.emit(base64.b64decode(reply.get('out','')))
-            except Exception:
-                self.state='error';self.emit(b'\x00'*len(raw));time.sleep(.2)
+            except Exception as exc:
+                self.error=str(exc);self.state='error';self.emit(b'');break
 
     def close(self):
         if self._closed:return
@@ -177,4 +215,9 @@ class SpeakerGate:
         try:self.proc.terminate();self.proc.wait(timeout=2)
         except Exception:
             try:self.proc.kill()
+            except Exception:pass
+        worker=getattr(self,'_thread',None)
+        if worker is not None and worker is not threading.current_thread():worker.join(timeout=1)
+        for pipe in (self.proc.stdin,self.proc.stdout):
+            try:pipe.close()
             except Exception:pass

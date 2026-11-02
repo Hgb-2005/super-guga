@@ -44,10 +44,12 @@ class BattlegroundDirector(QObject):
             board = {}
         netcut = DisconnectBudget().status(board.get('game_key',''))
         with self._lock:
+            from core.bg_pipeline import backend_capabilities
             return dict(self._state, recent=list(self._recent),
                         observation_backend='Power.log', action_backend='window_input',
                         screen_backend='existing_vision_model_game_client_only',
-                        memory_execution_available=False, local_training=lab, netcut=netcut,
+                        memory_execution_available=False, pipeline=backend_capabilities(),
+                        local_training=lab, netcut=netcut,
                         card_knowledge=card_knowledge_status())
 
     def stop(self):
@@ -59,10 +61,10 @@ class BattlegroundDirector(QObject):
     def start(self, mode='step', max_actions=12, seconds=240):
         if mode not in ('step','auto','observe','memory','look','netcut'):
             raise ValueError('未知战棋任务模式')
-        if type(max_actions) is not int or not 1 <= max_actions <= 30:
-            raise ValueError('本次最多允许 1—30 步')
-        if type(seconds) is not int or not 10 <= seconds <= 300:
-            raise ValueError('本次时间预算需要 10—300 秒')
+        if type(max_actions) is not int or not 1 <= max_actions <= 500:
+            raise ValueError('本次最多允许 1—500 步')
+        if type(seconds) is not int or not 10 <= seconds <= 1800:
+            raise ValueError('本次时间预算需要 10—1800 秒')
         with self._lock:
             if self._worker and self._worker.is_alive():
                 raise RuntimeError('战棋任务尚在运行；先查询状态或停止')
@@ -134,6 +136,15 @@ class BattlegroundDirector(QObject):
                 return
             if self._factory:
                 session = self._factory(self._record)
+            elif mode == 'auto':
+                from core.bg_auto import prepare_battleground
+                from core.bg_live import LiveSession
+                from core.bg_live_windows import HearthstoneWindow
+                from core.bg_agent import load_config
+                backend=HearthstoneWindow()
+                ready=prepare_battleground(backend,load_config(),self._publish,
+                                           self._stop,deadline)
+                session=LiveSession(backend,ready['log_path'],on_event=self._record)
             else:
                 from core.bg_live import LiveSession
                 from core.bg_live_windows import HearthstoneWindow

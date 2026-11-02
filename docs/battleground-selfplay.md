@@ -38,7 +38,7 @@ DeepSeek 后续适合负责战略讲解、专家轨迹标注和少数复杂选�
 在咕嘎项目根目录使用装有 PyTorch 的 Python（本机已有 CPU 版本，无需给桌宠安装新依赖）：
 
 ```powershell
-$enginePath = 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM'
+$enginePath = '<你的 HSBRSIM 引擎目录>'
 python tools/bg_selfplay.py --engine $enginePath --games 1 --seed 42 --output 'new-battles.json'
 python tools/train_bg_selfplay.py --engine $enginePath --output 'new-training-run' --bc-games 8 --rl-games 24 --eval-games 16 --max-seconds 300
 python tools/bg_selfplay.py --engine $enginePath --checkpoint 'new-training-run/ppo.pt' --games 2 --output 'new-policy-battles.json'
@@ -58,3 +58,17 @@ python -m pytest tools/test_bg_selfplay.py -q
 先对齐当前赛季卡池和关键规则，建立可对照场景测试，再扩大训练。接着加入实体/卡牌身份编码、种族联动、目标、站位和多轮记忆，用专家/搜索轨迹预热，以多版本历史策略组成对手池。独立评测需要更多种子、不同对手、置信区间和功能覆盖记录。
 
 最终才将通过评测的本地策略接到咕嘎观测适配与合法动作校验。当前权重只用于离线模拟器；用户暂停实机测试的约定继续有效。
+
+## 2026-10-22：同版本训练闸门与影子观察
+
+客户端当前卡牌快照为 `37.0.0.255130`，上游 HSBRSIM 最新提交仍为 `36.2.2.249896`。因此旧版冠军权重在 37.0 实局中自动标记为 `version_mismatch`，不再参与候选排序；`core/bg_version.py` 也会拒绝启动补丁不一致的离线训练。
+
+`battleground(action=shadow)` 启动 15 分钟只读 Power.log 观察，并打开 HDT；只有离线引擎与客户端补丁完全一致时才会同时启动独立八人训练。当前版本不一致时只记录人类局面、候选与选择，不生成旧规则训练结果。`shadow_stop` 可停止两个有界进程，`status` 同时返回观察与 HDT 状态。
+
+实时操作不依赖持续截图：高频状态来自增量日志，画面模型只用于阶段转换和坐标校准。HDT/BobsBuddy 适合提供当前卡牌定义下的战斗概率；完整八人训练仍必须等待同版本经济、英雄、饰品与效果脚本。
+
+### 当前实局人类策略样本
+
+从 `client_build=254477` 的同一次真实对局提取了人类 `SendOption` 选择、可见候选、费用、身材、站位与操作前局面。`tools/train_bg_human_choices.py` 以每个选择代次为组训练候选排序器，并按时间留出最后20%的组做验证；输出 `data/bg_agent/human_learning_254477.json`。模型必须与实局构建号一致，当前版本通过 `LiveReader.client_build` 校验。
+
+这组数据只描述该玩家的真实选择，不能证明选择最优。模型在自动选择门槛未通过时只把相近回合、酒馆等级下的动作类型统计注入 DeepSeek 决策上下文，不直接点牌；达到独立留出准确率和样本量门槛后才允许进一步自动化。

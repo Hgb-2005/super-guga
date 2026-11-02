@@ -37,12 +37,18 @@ def _save():
         pass
 
 
-def record_result(result: str = 'loss', place: int = None, turns: int = None) -> list:
+def record_result(result: str = 'loss', place: int = None, turns: int = None,
+                  game_key: str = None) -> list:
     """记一场战绩（result: win/loss/concede；place: 名次可空；turns: 回合数可空）。
     返回裁剪后的最近战绩列表。"""
     data = _load()
-    data['history'].append({'result': result, 'place': place, 'turns': turns,
-                            'ts': int(time.time())})
+    if game_key and any(x.get('game_key') == game_key for x in data.get('history', [])):
+        return data['history'][-MAX_KEEP:]
+    item = {'result': result, 'place': place, 'turns': turns,
+            'ts': int(time.time())}
+    if game_key:
+        item['game_key'] = game_key
+    data['history'].append(item)
     data['history'] = data['history'][-MAX_KEEP:]
     _save()
     return data['history']
@@ -69,7 +75,8 @@ def stats(history: list = None) -> dict:
             streak_loss += 1
         else:
             break
-    places = [x['place'] for x in h if x.get('place')]
+    places = [x['place'] for x in h if x.get('place')
+              and not (x.get('place') == 1 and x.get('result') != 'win')]
     return {'total': len(h), 'wins': wins, 'losses': len(h) - wins,
             'streak_win': streak_win, 'streak_loss': streak_loss,
             'avg_place': round(sum(places) / len(places), 1) if places else None}
@@ -82,7 +89,7 @@ def format_line(history: list = None) -> str:
     for x in h:
         if x.get('result') == 'win':
             out.append('第1')
-        elif x.get('place'):
+        elif x.get('place') and not (x.get('place') == 1 and x.get('result') != 'win'):
             out.append(f"第{x['place']}")
         else:
             out.append('出局')

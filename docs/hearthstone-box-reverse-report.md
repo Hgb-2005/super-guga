@@ -20,7 +20,7 @@
 - 盒子官方下载入口：[炉石盒子官网](https://lushi.163.com/)。已保存官网 main.js；其默认渠道 `pchz9`，下载地址为 `https://hs-api.lushi.163.com/setup/pchz9/hsa_setup.exe`。不保留 CDN 临时鉴权参数。
 - 安装包：221,757,152 bytes，SHA256 `88f0601ba9ef0c56447469f41160cad3c5ba89e8d279ce5ec800aeb45af7273c`。Authenticode 检查 `Valid`，签名主体 `NetEase (Hangzhou) Network Co., Ltd`，文件版本 4.0.4.486。
 - 未在有界限的本机安装目录和卸载项检索中找到已安装盒子；本报告针对上述官方发版安装包，不代表用户曾安装的其他版本。
-- NSIS 包静态列出 277 个路径记录，选择提取 67 个文件；没有运行安装器。工具和证据在 `C:/Users/Admin（无密码）/Desktop/Vibe oding/output/hsbox-research-20261019/`。
+- NSIS 包静态列出 277 个路径记录，选择提取 67 个文件；没有运行安装器。工具和证据位于本地 REA 证据目录，不随仓库分发。
 
 ## 已确认的模块证据
 
@@ -103,7 +103,7 @@ Input 类型 token `0x02000131` 含 Player、Opponent、双方队友的属性后
 
 ## 复核与保存
 
-`analyze_pe.py` 仅读取目标，使用本目录 `python-tools` 中的 pefile/capstone 输出 `pe-structure-evidence.json`。REA CLI 位于 `C:/Users/Admin（无密码）/.codex/tools/rea-cli/node_modules/rea-agents/scripts/rea.mjs`；运行 `node <该路径> inspect-pe-resources <HSAng.exe路径> --json` 或 `inspect-managed-members <BobsBuddy.dll路径> --json` 可复核相应证据。CLI、源码、技能分别安装；没有修改 Codex MCP 配置。
+`analyze_pe.py` 仅读取目标，使用本目录 `python-tools` 中的 pefile/capstone 输出 `pe-structure-evidence.json`。REA CLI 的具体安装位置由分析环境决定；运行 `node <rea.mjs> inspect-pe-resources <HSAng.exe路径> --json` 或 `inspect-managed-members <BobsBuddy.dll路径> --json` 可复核相应证据。CLI、源码、技能分别安装；没有修改 Codex MCP 配置。
 
 官网 REA 分析证据 `ev_6a800aab82b29b5d435044c97d698b52513ba68680c4ad5a04dd834ed5a38754` 只用于下载来源与网站结构，不能作为客户端胜率算法的证据。二进制偏移须绑定对应文件 SHA256，更新后重新分析，不沿用旧偏移。
 

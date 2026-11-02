@@ -1,5 +1,7 @@
 """Short, factual feedback independent of whether the reasoning model finishes."""
 import re
+import time
+from collections import deque
 from pathlib import Path
 
 def acknowledgement(request):
@@ -28,8 +30,48 @@ def tool_feedback(name,args,result=None):
         ('local_computer','run'):'正在执行命令并等待验证结果',('applications','open'):'正在打开目标软件'}
     summary=labels.get((name,action),'正在执行下一步操作')
     if result is not None:
+        payload=result.get('result') if isinstance(result.get('result'),dict) else result
+        if name=='applications' and payload.get('selection_required'):
+            return '找到了多个已运行窗口，正在选择目标，尚未完成切换。'
         if result.get('ok') and name=='computer' and action in ('click','double_click','drag','scroll','hotkey','type','editor_select_tail','uia'):
             summary=summary.replace('正在','已发送，等待复查：',1)
         elif result.get('ok'):summary=summary.replace('正在','已完成：',1)
         else:summary='这一步没有完成，我会根据错误检查后调整。'
     return summary
+
+
+class EvidenceProgress:
+    """User-facing digest of tool receipts, never of a model's private reasoning."""
+    def __init__(self, interval=60, now=None):
+        self.interval=interval
+        self.last_notice=time.monotonic() if now is None else now
+        self.receipts=deque(maxlen=8)
+        self.count=0;self.reported=-1;self.pending='等待执行器返回结果';self.stale_reported=False
+        self.beat=0
+
+    def tool_start(self,name,args):
+        self.pending=tool_feedback(name,args)
+
+    def tool_result(self,name,args,result):
+        if not isinstance(result,dict):return
+        self.count+=1
+        self.stale_reported=False
+        # Keep only fixed tool labels; never narrate raw payloads, credentials,
+        # reasoning tokens, or the executing model's unverified success claims.
+        label=tool_feedback(name,args)
+        outcome='工具回执成功' if result.get('ok') is True else '未完成'
+        self.receipts.append(label.replace('正在','',1)+'（'+outcome+'）')
+        self.pending='等待下一步执行或核验'
+
+    def notice(self, now=None):
+        now=time.monotonic() if now is None else now
+        if now-self.last_notice<self.interval:return None
+        self.last_notice=now
+        self.beat+=1
+        if self.reported==self.count:
+            self.stale_reported=True
+            return '这一分钟没有新的操作回执，'+self.pending+'。原因还不能确认，任务尚未完成。'
+        self.reported=self.count
+        if not self.receipts:
+            return '目前还没有收到可核验的操作结果，'+self.pending+'。任务尚未确认完成。'
+        return '进展：'+'；'.join(list(self.receipts)[-2:])+'。'+self.pending+'，整个任务尚未确认完成。'

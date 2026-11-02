@@ -7,8 +7,6 @@ CLIENT_ID = "Iv1.b231c327f1eaa229"
 SCOPE = "repo,read:user,write:public_key"
 
 ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
 
 def api_post(url, data):
     body = urllib.parse.urlencode(data).encode('utf-8')

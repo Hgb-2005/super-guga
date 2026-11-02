@@ -14,7 +14,7 @@ class ChatWorkspace:
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id),
+                    id TEXT PRIMARY KEY, project_id TEXT REFERENCES projects(id), agent_id TEXT NOT NULL DEFAULT '001',
                     name TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
                     updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS messages (
@@ -23,6 +23,9 @@ class ChatWorkspace:
                     created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT);
             ''')
+            columns={row[1] for row in db.execute('PRAGMA table_info(conversations)')}
+            if 'agent_id' not in columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT '001'")
 
     @contextmanager
     def connect(self):
@@ -42,12 +45,17 @@ class ChatWorkspace:
             raise ValueError('名称需要 1—80 个字符')
         return value
 
-    def snapshot(self, archived=False):
+    def snapshot(self, archived=False, agent_id=None):
         with self.connect() as db:
+            if agent_id is None:
+                conversations=[dict(r) for r in db.execute(
+                    'SELECT * FROM conversations WHERE archived=? ORDER BY updated DESC,rowid DESC',(int(archived),))]
+            else:
+                conversations=[dict(r) for r in db.execute(
+                    'SELECT * FROM conversations WHERE archived=? AND agent_id=? ORDER BY updated DESC,rowid DESC',
+                    (int(archived),str(agent_id)))]
             return dict(projects=[dict(r) for r in db.execute('SELECT * FROM projects ORDER BY rowid')],
-                        conversations=[dict(r) for r in db.execute(
-                            'SELECT * FROM conversations WHERE archived=? ORDER BY updated DESC,rowid DESC',
-                            (int(archived),))])
+                        conversations=conversations)
 
     def create_project(self, name):
         ident = uuid.uuid4().hex
@@ -55,11 +63,11 @@ class ChatWorkspace:
             db.execute('INSERT INTO projects VALUES (?,?)', (ident, self.name(name)))
         return ident
 
-    def create_conversation(self, name='新对话', project_id=None):
+    def create_conversation(self, name='新对话', project_id=None, agent_id='001'):
         ident = uuid.uuid4().hex
         with self.connect() as db:
-            db.execute('INSERT INTO conversations(id,project_id,name) VALUES (?,?,?)',
-                       (ident, project_id, self.name(name)))
+            db.execute('INSERT INTO conversations(id,project_id,agent_id,name) VALUES (?,?,?,?)',
+                       (ident, project_id, str(agent_id), self.name(name)))
         return ident
 
     def conversation(self, ident):

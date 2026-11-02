@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -141,6 +141,9 @@ class VoiceTests(unittest.TestCase):
         engine._cfg = dict(CFG, headphones=False)
         engine._generating = True
         engine._capture(b'abcd', 2, None, None)
+        self.assertEqual(engine._input.get_nowait(), b'abcd','Thinking/tool waits must not mute capture')
+        engine._playing = True
+        engine._capture(b'abcd', 2, None, None)
         self.assertEqual(engine._input.get_nowait(), bytes(4))
         engine._cfg['headphones'] = True
         engine._capture(b'abcd', 2, None, None)
@@ -150,6 +153,44 @@ class VoiceTests(unittest.TestCase):
             engine._capture(b'abcd', 2, None, None)
         self.assertEqual(engine._input.qsize(), 30)
         self.assertEqual(engine._input.get_nowait(), bytes(4))
+
+    def test_verified_audio_is_not_muted_during_silent_model_generation(self):
+        engine=RealtimeVoice();engine._cfg=dict(CFG,headphones=False)
+        engine._generating=True
+        engine._speaker_output(b'abcd')
+        self.assertEqual(engine._input.get_nowait(),b'abcd')
+        engine._pcm.append(b'abcd')
+        engine._speaker_output(b'abcd')
+        self.assertEqual(engine._input.get_nowait(),bytes(4))
+
+    def test_owner_gate_receives_mute_and_reports_processing_failure(self):
+        engine=RealtimeVoice();engine._cfg=dict(CFG)
+        gate=Mock();gate.submit.return_value=True;gate.error=''
+        engine._speaker_gate=gate
+        levels=[];engine.audio_level.connect(levels.append)
+        engine._capture(b'\x10\x01'*640,640,None,None)
+        gate.submit.assert_called_with(b'\x10\x01'*640,blocked=False)
+        self.assertTrue(levels)
+        engine.mute(True)
+        engine._capture(b'\x10\x01'*640,640,None,None)
+        gate.submit.assert_called_with(bytes(1280),blocked=True)
+        gate.submit.return_value=False;gate.error='声纹队列已满'
+        engine._capture(bytes(1280),640,None,None)
+        self.assertTrue(engine._stop.is_set())
+        self.assertEqual(engine.last_error,'声纹队列已满')
+
+    def test_delayed_owner_release_cannot_bypass_mute(self):
+        engine=RealtimeVoice();engine._cfg=dict(CFG)
+        engine.mute(True)
+        engine._speaker_output(b'\x10\x01'*640)
+        self.assertEqual(engine._input.get_nowait(),bytes(1280))
+
+    def test_owner_stream_congestion_is_reported_instead_of_dropping_words(self):
+        engine=RealtimeVoice();engine._cfg=dict(CFG)
+        for _ in range(30):engine._input.put_nowait(bytes(1280))
+        engine._speaker_output(b'\x10\x01'*640)
+        self.assertTrue(engine._stop.is_set())
+        self.assertIn('避免静默丢字',engine.last_error)
 
     def test_cancelled_audio_never_returns(self):
         engine = RealtimeVoice()
@@ -208,6 +249,20 @@ class VoiceTests(unittest.TestCase):
             self.assertFalse(engine.active)
             self.assertFalse(Stream.opened)
             self.assertTrue(socket.closed.is_set())
+
+    def test_voice_defaults_to_direct_capture_without_speaker_enrollment(self):
+        self.assertFalse(DEFAULTS['owner_only'])
+        engine=RealtimeVoice();socket=Socket();cfg=dict(CFG);cfg.pop('owner_only',None)
+        with patch('websocket.create_connection',return_value=socket), \
+             patch('sounddevice.RawInputStream',Stream),patch('sounddevice.RawOutputStream',Stream), \
+             patch('core.speaker_gate.SpeakerGate') as gate:
+            engine.start(cfg)
+            deadline=time.monotonic()+2
+            while len(Stream.opened)<2 and time.monotonic()<deadline:time.sleep(.01)
+            gate.assert_not_called();self.assertIsNone(engine._speaker_gate)
+            engine._capture(b'abcd',2,None,None)
+            self.assertEqual(engine._input.get_nowait(),b'abcd')
+            engine.stop();engine._thread.join(3)
 
     def test_server_rejects_config_before_microphone_opens(self):
         engine = RealtimeVoice()

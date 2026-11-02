@@ -16,7 +16,7 @@ from collections import deque
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 from PIL import Image
 
-SRC = r'C:\Users\Admin（无密码）\Desktop\图片库'
+SRC = os.environ.get('GUGA_IMAGE_LIBRARY', 'samples')
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DST = os.path.join(PROJECT, 'resources', 'expressions')
 

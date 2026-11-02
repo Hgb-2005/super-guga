@@ -14,6 +14,24 @@ class _MI(ctypes.Structure):
 class _U(ctypes.Union):_fields_=[('ki',_KI),('mi',_MI)]
 class _INPUT(ctypes.Structure):_fields_=[('type',wintypes.DWORD),('value',_U)]
 
+def _attach_focus(hwnd):
+    """Windows foreground handoff, bounded to the requested existing window."""
+    import win32gui,win32process,win32api
+    user=ctypes.windll.user32;attached=[]
+    try:
+        target_thread=win32process.GetWindowThreadProcessId(hwnd)[0]
+        foreground=win32gui.GetForegroundWindow()
+        foreground_thread=win32process.GetWindowThreadProcessId(foreground)[0] if foreground else 0
+        current=win32api.GetCurrentThreadId()
+        if not target_thread:return False
+        for thread in set((target_thread,foreground_thread))-{0,current}:
+            if user.AttachThreadInput(current,thread,True):attached.append(thread)
+        win32gui.BringWindowToTop(hwnd);win32gui.SetForegroundWindow(hwnd)
+        return win32gui.GetForegroundWindow()==hwnd
+    except Exception:return False
+    finally:
+        for thread in reversed(attached):user.AttachThreadInput(current,thread,False)
+
 def _send_keys(values):
     user=ctypes.windll.user32
     def send(code,up=False):
@@ -81,19 +99,22 @@ class ComputerControl:
             return dict(workspaces=sorted(entries,key=lambda e:e['updated'],reverse=True)[:30],
                 note='编辑器最近工作区元数据；结合窗口标题核对，不能只凭最近记录判断当前文件。')
         if action=='windows':
-            windows=[]
-            def collect(hwnd,_):
-                title=win32gui.GetWindowText(hwnd)
-                if title and win32gui.IsWindowVisible(hwnd):
-                    windows.append(dict(hwnd=hwnd,title=title,rect=win32gui.GetWindowRect(hwnd)))
-            win32gui.EnumWindows(collect,None)
-            return dict(windows=windows[:100])
+            from core.window_inventory import list_windows
+            return dict(windows=list_windows(args.get('query','')),
+                note='这是已经运行的窗口，包含最小化窗口；按进程和标题共同识别。选定后focus恢复，再observe/accessibility。')
         if action=='focus':
             hwnd=int(args['hwnd'])
             if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭，请重新列出')
-            win32gui.ShowWindow(hwnd,9);win32gui.SetForegroundWindow(hwnd)
+            win32gui.ShowWindow(hwnd,9)
+            if win32gui.GetForegroundWindow()!=hwnd:
+                import pywintypes
+                try:win32gui.SetForegroundWindow(hwnd)
+                except pywintypes.error:
+                    if win32gui.GetForegroundWindow()!=hwnd and not _attach_focus(hwnd):
+                        raise RuntimeError('Windows未允许切换到目标窗口；尚未发送输入，请检查窗口状态或请用户聚焦目标窗口') from None
             self.observation=None
-            return dict(focused=win32gui.GetForegroundWindow()==hwnd,needs_observe=True)
+            if win32gui.GetForegroundWindow()!=hwnd:raise RuntimeError('目标窗口尚未获得焦点；未发送输入')
+            return dict(focused=True,needs_observe=True)
         if action=='observe':
             from PIL import ImageGrab
             hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
@@ -216,7 +237,7 @@ $r=$c.BoundingRectangle
                 expected=args.get('uia_expected',True))
         observed=self.observation
         if not observed or args.get('observation_id')!=observed['id'] or time.monotonic()-observed['time']>30:
-            raise ValueError('观察已过期；先 observe 再输入')
+            raise ValueError('观察 ID 已消耗或过期；先 observe 取得新 ID。若刚点击过输入框，只需用新 ID 执行 type，不要再次点击；也可一次 fill 完成定位与输入')
         if win32gui.GetForegroundWindow()!=observed['hwnd'] or win32gui.GetWindowRect(observed['hwnd'])!=observed['rect']:
             self.observation=None
             raise ValueError('前台窗口或位置已改变，先重新观察')
@@ -234,6 +255,25 @@ $r=$c.BoundingRectangle
             x,y=mapped(x,y)
             ctypes.windll.user32.SetCursorPos(x,y)
         user=ctypes.windll.user32
+        requested_action=action
+        if action=='fill':
+            # One bounded transaction: there is no model round trip between
+            # selecting the field and typing, and the observation is consumed once.
+            text=str(args.get('text',''))
+            if not text or len(text)>4000:raise ValueError('fill 需要1—4000字的 text')
+            keys=str(args.get('keys','')).lower().replace(' ','')
+            has_position='x' in args or 'y' in args
+            if has_position and ('x' not in args or 'y' not in args):raise ValueError('fill 坐标需要同时提供 x、y')
+            if keys and has_position:raise ValueError('fill 用坐标或快捷键定位，不能同时提供')
+            if keys and keys not in ('ctrl+l','alt+d','ctrl+a'):raise ValueError('fill 仅支持 ctrl+l、alt+d、ctrl+a 定位')
+            if has_position:
+                position(args['x'],args['y'])
+                user.mouse_event(2,0,0,0,0);user.mouse_event(4,0,0,0,0)
+            elif keys:
+                _send_keys({'ctrl+l':[17,76],'alt+d':[18,68],'ctrl+a':[17,65]}[keys])
+            if cancel.is_set() or win32gui.GetForegroundWindow()!=observed['hwnd']:
+                raise RuntimeError('输入已取消或前台窗口改变；未继续打字')
+            action='type'
         if action in ('click','double_click','move','drag'):
             position(args['x'],args['y'])
             if action in ('click','double_click'):
@@ -292,11 +332,14 @@ $r=$c.BoundingRectangle
             encoded=text.encode('utf-16-le')
             for offset in range(0,len(encoded),2):
                 if cancel.is_set():raise RuntimeError('文字输入已取消')
+                if win32gui.GetForegroundWindow()!=observed['hwnd']:
+                    raise RuntimeError('打字期间前台窗口改变，已停止后续输入；部分文字可能已输入，请观察核对')
                 scan=int.from_bytes(encoded[offset:offset+2],'little')
                 inputs=(INPUT*2)(INPUT(1,U(ki=KI(0,scan,4,0,0))),INPUT(1,U(ki=KI(0,scan,6,0,0))))
                 if user.SendInput(2,inputs,ctypes.sizeof(INPUT))!=2:raise RuntimeError('Windows 拒绝输入；检查实际进程权限')
         else:raise ValueError('未知屏幕操作')
-        return dict(input_sent=True,action=action,needs_observe=True,message='输入已发送；必须重新观察验证效果')
+        return dict(input_sent=True,action=requested_action,needs_observe=True,
+            next_action='observe',message='输入已发送；只需重新 observe 验证效果，不要重复刚才的点击或输入')
 
     @staticmethod
     def _paste_multiline(text,hwnd,cancel):

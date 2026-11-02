@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "clips": [
+    {
+      "name": "doze",
+      "frames": "doze/frames",
+      "native_fps": 24.0,
+      "weight": 0.8
+    },
+    {
+      "name": "heart",
+      "frames": "heart/frames",
+      "native_fps": 24.0,
+      "weight": 1.0
+    }
+  ],
+  "note": "自然待机动作；仅已审核原生24fps单次片段。语音、拖拽、任务、唱歌与显式表情优先。"
+}

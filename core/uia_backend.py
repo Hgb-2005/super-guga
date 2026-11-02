@@ -60,6 +60,11 @@ class UIABackend:
                       class_name=str(c.ClassName or '')[:100],enabled=bool(c.IsEnabled),
                       offscreen=bool(c.IsOffscreen),rect=self._rect(element),
                       patterns=[str(x.ProgrammaticName or '').split('.')[-1] for x in element.GetSupportedPatterns()])
+            if not c.IsPassword:
+                try:
+                    pattern=element.GetCurrentPattern(self.Patterns['set_value'].Pattern)
+                    item['value']=str(pattern.Current.Value or '')[:1000]
+                except Exception:pass
             return item,element
         except Exception:
             return None,None

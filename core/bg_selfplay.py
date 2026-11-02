@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 
-ENGINE_REVISION = "84e6e413e73fda01f25398f444bdd17c86f6f302"
+ENGINE_REVISION = "d8de313a6927378e32ee923d0c5843fb0f19d9f4"
 PROFILE = "hsrl2-rich-spell-position-v2"
 KINDS = ("END", "BUY", "PLAY", "BUY_SPELL", "PLAY_SPELL", "SELL",
          "REFRESH", "FREEZE", "UPGRADE")
@@ -27,6 +27,8 @@ FEATURE_DIM = ACTION_DIM + STATE_DIM + VALUE_DIM + IDENTITY_DIM
 
 def load_engine(path):
     root = Path(path).resolve()
+    from core.bg_version import verify_same_patch
+    version=verify_same_patch(root)
     revision = subprocess.check_output(
         ["git", "-C", str(root), "rev-parse", "HEAD"], text=True, timeout=10
     ).strip()
@@ -37,7 +39,18 @@ def load_engine(path):
         text=True, timeout=10
     ).strip()
     if changes:
-        raise ValueError("Engine/data have tracked local changes; refusing an unrecorded rules variant")
+        raise ValueError("Engine code has unrecorded local changes; refusing to train")
+    untracked = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "--", "hsrl2", "data"],
+        text=True, timeout=10).strip()
+    if untracked:
+        raise ValueError('Engine has untracked rule or data files; refusing unrecorded training')
+    manifest_path=root/'data/version-manifest.json'
+    if not manifest_path.is_file():
+        raise ValueError('Current-version data manifest is missing; refusing unverified data')
+    manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+    if manifest.get('patch')!=version['patch']:
+        raise ValueError('Data manifest patch does not match engine data')
     sys.path.insert(0, str(root))
     import hsrl2
     if Path(hsrl2.__file__).resolve().parent != root / "hsrl2":
@@ -52,17 +65,20 @@ def load_engine(path):
 
     class LabDB(CardDB):
         def pool_minions(self):
-            # Known missing script from upstream's strict registry audit.
-            return [d for d in super().pool_minions() if d.id != "BG33_319"]
+            return list(super().pool_minions())
 
     db = LabDB.load(root / "data")
-    missing = [d.id for d in db.pool_minions() if d.id not in REGISTRY and
-               any(word in d.text for word in ("After", "Whenever", "Battlecry", "Deathrattle",
-                                               "Avenge", "Spellcraft", "end of", "start of"))]
-    if missing:
-        raise ValueError(f"Unscripted effect cards in laboratory pool: {missing}")
+    effect_words=("After", "Whenever", "Battlecry", "Deathrattle", "Avenge", "Spellcraft",
+                  "end of", "start of", "Rally", "Activate", "Choose One")
+    effect_cards=[d for d in db.pool_minions()+db.pool_spells()
+                  if any(word in (d.text or '') for word in effect_words)]
+    missing=[d.id for d in effect_cards if d.id not in REGISTRY]
+    coverage=dict(pool_minions=len(db.pool_minions()),pool_spells=len(db.pool_spells()),
+                  effect_cards=len(effect_cards),scripted=len(effect_cards)-len(missing),
+                  unsupported_effects=len(missing),missing_ids=missing[:100],
+                  mode='current-data with vanilla fallback for unscripted effects')
     return dict(Game=Game, Hero=Hero, Minion=Minion, Spell=Spell, Tag=GameTag, db=db,
-                revision=revision, root=root)
+                revision=revision, patch=version['patch'], root=root, coverage=coverage)
 
 
 @dataclass(frozen=True)

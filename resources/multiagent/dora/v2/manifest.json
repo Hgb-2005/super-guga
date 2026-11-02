@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "version": "2026-10-29.6",
+  "expressions": {
+    "happy": "happy.png",
+    "sad": "sad.png",
+    "angry": "angry.png",
+    "sleepy": "sleepy.png"
+  },
+  "fallbacks": {
+    "normal": "happy",
+    "surprised": "happy",
+    "playful": "angry",
+    "eating": "happy"
+  },
+  "source": "User-supplied originals; built-in image editor explicitly authorized 2026-10-29.",
+  "edits": "Watermark/background removed; cropped feet completed; Dora sleepy expression derived from cleaned happy reference.",
+  "review_status": "passed",
+  "review_artifacts": [
+    "runtime/multiagent-review/expressions-review-v2.png",
+    "runtime/multiagent-review/motion-review-v2.gif"
+  ]
+}

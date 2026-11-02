@@ -7,11 +7,19 @@
 
 长语音的时长、上下文、打断、断线、额度与任务执行边界见 [实时语音能力边界](docs/realtime-voice-boundaries.md)；Computer Use 各路线和 UIA、DOM、内存在自动化中的作用见 [Computer Use 路线与边界](docs/computer-use-landscape.md)。
 
-首次实时语音使用前运行 `录入主人声音.bat`；DSH 长任务 sidecar 的安装、登录和事件协议见 [DSH sidecar 接入](docs/dsh-sidecar.md)。
+实时语音默认不做声纹匹配，无需录入主人声音；DSH 长任务 sidecar 的安装、登录和事件协议见 [DSH sidecar 接入](docs/dsh-sidecar.md)。
+
+2026-11-02：执行链已改为本地优先。常见软件、微信、截图识别和多步桌面任务由咕嘎自己的视觉/UIA 智能体执行；DSH 只用于源码仓库、多文件工程和复杂代码任务。常见流程可保存为持久工作流，重复成功后会生成待审核的经验候选。设计与边界见 [本地优先任务路由](docs/local-first-workflows-20261102.md) 和 [DSH 任务监督](docs/dsh-supervisor-20261102.md)。
+
+形象保持原版贴图，保留原有语音和动作。带侧背壳的 3D 开发预览已暂停，不在普通启动或日常菜单中启用；相关研究归档见 [角色表现层升级](docs/desktop-avatar-research-20261026.md)。
+
+立体动作实验与 Blender 工作副本仅供开发研究，自动演示和普通用户入口已停用，优先保证原画形象一致；[实验记录](docs/avatar-motion-v2.md)。
 
 ## 功能概览
 
 新增：[咕嘎智能体与个人软件生态](docs/agent-ecosystem.md)。右键“对话”打开项目/会话悬浮窗；“长语音 · 边聊边执行”使用现有 DeepSeek 模型调用自身工具、打开用户授权的软件，并通过双向 stdio MCP 接入个人软件生态。
+
+智能体采用四层执行：本地快速命令、已保存工作流、咕嘎本地视觉智能体、DSH 复杂代码执行器。微信、腾讯会议到 B 站、截图识屏和普通软件操作默认留在本地，避免把日常任务绕进长任务 sidecar。
 
 新增：[战棋决策实验室（算法候选 + 现有模型 + 动作校验）](docs/battleground-agent.md)。
 在右键菜单或托盘打开，可先载入合成局面做离线分析；当前为基础规则子集，尚未实现完整实服自动对局。
@@ -153,7 +161,7 @@ guga-penguin-pet/
 
 ## License
 
-MIT
+代码采用 MIT License。角色素材、第三方卡牌数据和可选模型另有来源与许可边界，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 持续语音对话（2026-10-13 升级）
 

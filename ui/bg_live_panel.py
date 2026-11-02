@@ -16,7 +16,7 @@ class LiveWorker(QThread):
             from core.bg_live import LiveSession
             from core.bg_live_windows import HearthstoneWindow
             from core.log_reader import find_log_path
-            path=find_log_path()
+            path=find_log_path(current_session=True)
             if not path:
                 raise RuntimeError('未找到炉石日志，请先进入酒馆战棋')
             self.session=LiveSession(HearthstoneWindow(),path,self.message.emit)
@@ -44,7 +44,7 @@ class BattlegroundLivePanel(QDialog):
         title=QLabel('咕嘎 · 模型决定，实际操作')
         title.setStyleSheet('font-size:23px;color:#93c5fd')
         layout.addWidget(title)
-        note=QLabel('读取本机日志 → 现有 DeepSeek 决策 → 现有视觉模型定位 → 操作后核对。\n连续模式最多 12 步 / 4 分钟；按住 Esc 或点击停止可中止。\n支持免费战棋入口/英雄选择，以及买/出/卖随从、刷新、冻结、升本。\n入口和英雄每次只点一步；发现与目标法术暂时交还给你。')
+        note=QLabel('读取本机日志 → 配置的策略层（支持 DeepBattler 协议）→ 视觉定位 → 操作后核对。\n连续模式最多 12 步 / 4 分钟；按住 Esc 或点击停止可中止。\n支持免费战棋入口/英雄选择，以及买/出/卖随从、刷新、冻结、升本。\n每执行一步重新决策；发现、英雄技能与目标法术暂时交还给你。')
         note.setWordWrap(True)
         layout.addWidget(note)
         row=QHBoxLayout()

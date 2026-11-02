@@ -24,7 +24,7 @@ DEFAULTS = dict(provider='qianwen', model='qwen-audio-3.1-realtime-plus', region
                 silence_duration_ms=1000, max_call_minutes=240,
                 idle_minutes=10, input_device=None, output_device=None,
                 free_only=True, free_quota_confirmed_model='', free_quota_confirmed_provider='',
-                owner_only=True, owner_threshold=None)
+                owner_only=False, owner_threshold=None)
 PERSONA = '''你是咕嘎，一只娇憨、调皮但体贴的小企鹅桌宠。用自然普通话与饲养员聊天，
 自称本鹅，偶尔说咕嘎。认真倾听长段表达，不催促，不把每个问题都拐到游戏。
 默认用简洁口语回答，需要讲解时可以详细展开。不要读表情标签、动作标签、竖线或Markdown。
@@ -167,6 +167,7 @@ class RealtimeVoice(QObject):
         self._usage_started = ''
         self._speaker_gate = None
         self._speaker_state = None
+        self._last_speaker_diagnostic = 0.
 
     @property
     def active(self):
@@ -189,7 +190,7 @@ class RealtimeVoice(QObject):
                         self._cfg.get('free_quota_confirmed_provider') != self._cfg.get('provider', 'qianwen')):
                     raise ValueError('尚未确认所选平台该模型的“免费额度用尽即停”保护，已阻止联网调用')
             import sounddevice, websocket  # noqa: F401
-            if self._cfg.get('owner_only', True):
+            if self._cfg.get('owner_only', False):
                 from core.speaker_gate import SpeakerGate
                 self._speaker_gate = SpeakerGate(threshold=self._cfg.get('owner_threshold'),emit=self._speaker_output)
             else:
@@ -199,6 +200,7 @@ class RealtimeVoice(QObject):
             self.failed.emit(str(exc))
             return
         self._stop.clear()
+        self._speaker_state = None
         self.last_error = ''
         self._muted = False
         self._history.clear()
@@ -258,24 +260,20 @@ class RealtimeVoice(QObject):
         if self._stop.is_set():
             return
         gated = self._muted or (not self._cfg.get('headphones') and
-                               (self._generating or self._playing or time.monotonic() < self._echo_until))
+                               (getattr(self,'_external_playing',False) or self._playing or bool(self._pcm) or time.monotonic() < self._echo_until))
         raw = bytes(len(indata)) if gated else bytes(indata)
-        if not gated and self._speaker_gate is not None:
-            self._speaker_gate.submit(raw)
-            state = self._speaker_gate.state
-            if state != self._speaker_state:
-                self._speaker_state = state
-                if state == 'rejected':
-                    self.status.emit('检测到非主人声音，已丢弃且未发送到云端')
-                elif state == 'owner':
-                    self.status.emit('主人声纹已确认')
-            return
         now = time.monotonic()
         if now - self._last_level_at >= 0.1:
             self._last_level_at = now
             samples = memoryview(raw).cast('h')
             rms = math.sqrt(sum(v * v for v in samples) / max(1, len(samples))) / 32768
             self.audio_level.emit(min(1.0, rms * 8))
+        if self._speaker_gate is not None:
+            # Silence must reach the local gate too, so a muted/playback interval
+            # cannot leave an old identity or a buffered prefix active.
+            if not self._speaker_gate.submit(raw,blocked=gated):
+                self._speaker_failure()
+            return
         try:
             self._input.put_nowait(raw)
         except queue.Full:
@@ -288,11 +286,38 @@ class RealtimeVoice(QObject):
 
     def _speaker_output(self,raw):
         if self._stop.is_set():return
+        gate=self._speaker_gate
+        if gate is not None:
+            if gate.error:
+                self._speaker_failure();return
+            state=gate.state
+            if state!=self._speaker_state:
+                self._speaker_state=state
+                if state=='rejected':self.status.emit('声纹暂未匹配，正在本地复核；未验证的语音不会发送')
+                elif state=='owner':self.status.emit('主人声纹已确认')
+            now=time.monotonic()
+            if now-self._last_speaker_diagnostic>=1.:
+                self._last_speaker_diagnostic=now
+                # Numeric health data only: no recording, transcript or secret.
+                try:
+                    path=CONFIG_PATH.parent/'runtime/voice/speaker_diagnostics.json'
+                    path.parent.mkdir(parents=True,exist_ok=True)
+                    path.write_text(json.dumps(dict(gate.stats,state=state,score=gate.last_score,
+                        updated=time.time()),ensure_ascii=False,indent=2),encoding='utf-8')
+                except OSError:pass
+        if not raw:return
+        if self._muted or (not self._cfg.get('headphones') and
+                (getattr(self,'_external_playing',False) or self._playing or bool(self._pcm) or time.monotonic()<self._echo_until)):
+            raw=bytes(len(raw))
         try:self._input.put_nowait(raw)
         except queue.Full:
-            try:
-                self._input.get_nowait();self._input.put_nowait(raw)
-            except (queue.Empty,queue.Full):pass
+            self._speaker_failure('语音发送队列已满，已停止通话，避免静默丢字')
+
+    def _speaker_failure(self,message=None):
+        if self._stop.is_set():return
+        self.last_error=message or getattr(self._speaker_gate,'error','') or '声纹处理异常，已停止通话'
+        self._stop.set()
+        self.failed.emit(self.last_error)
 
     def _playback(self, outdata, frames, timing, status):
         with self._state_lock:
@@ -538,6 +563,9 @@ class RealtimeVoice(QObject):
                     if self._stop.wait(delay):
                         break
         finally:
+            if self._speaker_gate is not None:
+                self._speaker_gate.close()
+                self._speaker_gate=None
             self._clear_queues()
             self._pcm.clear()
             self._set_playing(False)

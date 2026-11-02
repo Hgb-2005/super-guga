@@ -25,8 +25,22 @@ _GAME_ENTITY_CREATE_RE = re.compile(r'GameEntity EntityID=(\d+)')
 _INDENT_TAG_RE = re.compile(r' - +tag=\w+ value=\S+')
 
 
-def find_log_path():
+def _select_log_path(candidates, session_dirs, current_session=False):
+    if current_session and session_dirs:
+        # A fresh game process can create its session directory before it writes
+        # Power.log. Never fall back to yesterday's complete game in that gap.
+        latest=max(session_dirs,key=lambda p:(os.path.basename(p),os.path.getmtime(p)))
+        current=os.path.join(latest,'Power.log')
+        return current if os.path.isfile(current) else None
+    existing=[p for p in candidates if os.path.isfile(p)]
+    return max(existing,key=os.path.getmtime) if existing else None
+
+
+def find_log_path(current_session=False):
     candidates = []
+    session_dirs = []
+    roots = ['G:\\游戏\\Battle.net\\Hearthstone', 'D:\\Hearthstone',
+             os.path.expandvars(r'%ProgramFiles(x86)%\Hearthstone')]
     default = os.path.join(os.environ.get('LOCALAPPDATA', ''),
                            'Blizzard', 'Hearthstone', 'Logs', 'Power.log')
     candidates.append(default)
@@ -41,26 +55,21 @@ def find_log_path():
                 inst, _ = winreg.QueryValueEx(k, 'InstallPath')
                 winreg.CloseKey(k)
                 if inst:
+                    roots.append(inst)
                     candidates.append(os.path.join(inst, 'Logs', 'Power.log'))
             except OSError:
                 continue
     except Exception:
         pass
-    for root in ('G:\\游戏\\Battle.net\\Hearthstone', 'D:\\Hearthstone',
-                 os.path.expandvars(r'%ProgramFiles(x86)%\Hearthstone')):
+    for root in dict.fromkeys(roots):
         logs_dir = os.path.join(root, 'Logs')
         if os.path.isdir(logs_dir):
             for d in glob.glob(os.path.join(logs_dir, 'Hearthstone_*')):
+                if os.path.isdir(d):
+                    session_dirs.append(d)
                 candidates.append(os.path.join(d, 'Power.log'))
             candidates.append(os.path.join(logs_dir, 'Power.log'))
-    best = None
-    best_mtime = -1
-    for c in candidates:
-        if os.path.isfile(c):
-            mt = os.path.getmtime(c)
-            if mt > best_mtime:
-                best, best_mtime = c, mt
-    return best
+    return _select_log_path(candidates,session_dirs,current_session)
 
 
 LOG_PATH = find_log_path()
@@ -312,12 +321,12 @@ def read_current_board():
             _parse_chunk(lines2)
             b = _build_board()
             if b:
-                b['active'] = True
+                b['active'] = b.get('reason') != 'game_over'
             return b
         _parse_chunk(lines)
         b = _build_board()
     if b:
-        b['active'] = True
+        b['active'] = b.get('reason') != 'game_over'
     return b
 
 
@@ -471,9 +480,37 @@ def _build_board():
                 break
     # FINAL_GAMEOVER is authoritative even if a player entity still carries
     # PLAYING during the result screen. Do not expose a finished match as live.
+    # The final placement is written to the local hero as
+    # PLAYER_LEADERBOARD_PLACE. Counting LOST entities is not a placement: at
+    # the result screen tags may already be cleared, and that previously
+    # misreported a 4th-place finish as 1st.
     if game.get('STEP') in ('FINAL_GAMEOVER', 'FINAL_WRAPUP'):
-        return {'active': False, 'reason': 'game_over', 'playstate': 'FINAL_GAMEOVER',
-                'place': _count_eliminated() + 1, 'turn': game.get('TURN', 0),
+        local_ps = None
+        if my_controller is not None:
+            p_eid2 = _player_id_to_ent.get(my_controller)
+            if p_eid2 is not None:
+                local_ps = _ents.get(p_eid2, {}).get('PLAYSTATE')
+        place_raw = hero.get('PLAYER_LEADERBOARD_PLACE')
+        if place_raw is None and my_controller is not None:
+            # At the result screen the original hero can be a placeholder or
+            # an old copy. The newest local hero entity carries the final
+            # placement tag.
+            candidates = [(int(eid), ent.get('PLAYER_LEADERBOARD_PLACE'))
+                          for eid, ent in _ents.items()
+                          if ent.get('CARDTYPE') == 'HERO'
+                          and ent.get('CONTROLLER') == my_controller
+                          and ent.get('PLAYER_LEADERBOARD_PLACE') is not None]
+            if candidates:
+                place_raw = max(candidates, key=lambda pair: pair[0])[1]
+        try:
+            final_place = int(place_raw) if place_raw is not None else 0
+        except (TypeError, ValueError):
+            final_place = 0
+        if local_ps not in ('WON', 'LOST', 'CONCEDED'):
+            local_ps = ('WON' if final_place == 1 else
+                        'LOST' if final_place > 1 else 'FINAL_GAMEOVER')
+        return {'active': False, 'reason': 'game_over', 'playstate': local_ps,
+                'place': final_place or None, 'turn': game.get('TURN', 0),
                 'game_serial': _game_serial, 'game_key': _current_game_key()}
     # ---- 对局是否真的在进行：玩家 PLAYSTATE 结束状态检测 ----
     if my_controller is not None:

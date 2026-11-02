@@ -49,6 +49,7 @@ Thumbs.db
 ai_config.json.tmp
 
 # Local gameplay audit (no credentials)
+runtime/
 runtime/bg-live/
 runtime/bg-lab/
 runtime/netcut-budget.json
@@ -56,5 +57,20 @@ runtime/self-updates/
 runtime/agent-jobs/
 runtime/agent-tasks/
 runtime/chat/
+runtime/voice/
+runtime/music/
 resources/models/speaker/*.onnx
 mcp_servers.json
+build/
+dist/
+release-private/
+runtime/build-tools/
+
+# Third-party source references (local audits only; do not bundle or publish)
+runtime/references/
+runtime/dsh-pet-standalone/
+runtime/personal-harness/
+runtime/personal-harness-probe/
+runtime/research/
+runtime/video-workflows/
+runtime/video-workflow-qa/

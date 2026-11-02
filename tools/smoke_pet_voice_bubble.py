@@ -21,6 +21,8 @@ from core.realtime_voice import DEFAULTS
 from ui.pet_window import PetWindow
 from ui.agent_chat import AgentChatWindow
 
+default_browser_patch=patch("core.browser_launch.default_executable",return_value=None)
+default_browser_patch.start()
 app=QApplication([])
 for font in ('C:/Windows/Fonts/msyh.ttc','C:/Windows/Fonts/msyhbd.ttc'):
     QFontDatabase.addApplicationFont(font)
@@ -30,6 +32,8 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
     pet=PetWindow()
     for timer in pet.findChildren(QTimer):timer.stop()
     panel=AgentChatWindow(pet,ChatWorkspace(Path(folder)/'chat.sqlite3'));pet._agent_panel=panel
+    diagnostics_patch=patch('ui.agent_chat.FAST_DIAGNOSTICS_PATH',Path(folder)/'fast_diagnostics.json')
+    diagnostics_patch.start()
     cfg=dict(DEFAULTS,api_key='offline-only')
     with patch('core.realtime_voice.load_settings',return_value=cfg),patch.object(AgentRealtimeVoice,'start') as start:
         pet._open_agent_voice();app.processEvents()
@@ -38,6 +42,55 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert pet._agent_bubble.isVisible()
         assert not voice._stop.is_set()
         ident=panel.active_id
+        # User speech wakes sleepy; assistant speech and gestures do not.
+        pet._anim.set_expression('sleepy')
+        voice.transcript.emit('咕嘎','本鹅在这里陪你。');app.processEvents()
+        pet._say_with_expression('后台进度提示', 'happy', 'bounce')
+        assert pet._anim.expression=='sleepy'
+        voice.transcript.emit('饲养员','咕嘎你好');app.processEvents()
+        assert pet._anim.expression=='happy'
+        # Exercise transcript -> real Qt signal -> executor -> truthful result.
+        # Neither success nor failure may invoke the long-task model pipeline.
+        with patch('core.fast_commands._browser_executable',return_value=None),patch('core.fast_commands.webbrowser.open',return_value=True) as opened,patch.object(panel,'send') as long_task:
+            voice._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='请帮我打开一下浏览器'))
+            voice._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='帮我打开默认浏览器'))
+            app.processEvents()
+            opened.assert_called_once_with('https://www.baidu.com',new=2)
+            long_task.assert_not_called()
+        with patch('core.fast_commands.webbrowser.open',return_value=False),patch.object(panel,'send') as long_task:
+            voice._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='帮我打开百度'))
+            app.processEvents()
+            long_task.assert_called_once()
+            assert long_task.call_args.args[0]=='帮我打开百度'
+            assert long_task.call_args.kwargs['force_agent'] is True
+            assert 'fast_failure' in long_task.call_args.kwargs['execution_context']
+        # The public text entry and voice-request fallback must bypass a busy
+        # long task, and must never queue a simple launch as agent steering.
+        panel.busy=True
+        with patch('core.fast_commands.subprocess.Popen') as launched, \
+             patch.object(panel.agent,'start') as model,patch.object(panel.agent,'steer') as steering:
+            panel.send('打开浏览器')
+            model.assert_not_called();steering.assert_not_called();launched.assert_called_once()
+        voice._fast_jobs.clear()
+        # Explicit task stop must ask first; only a clear confirmation cancels.
+        panel.busy=True
+        with patch.object(panel.agent,'cancel') as cancel:
+            voice.task_requested.emit('stop-intent','停下目前的任务');app.processEvents()
+            cancel.assert_not_called()
+            assert '确定要停止' in pet._agent_bubble.full_text
+            voice.transcript.emit('饲养员','对');app.processEvents()
+            cancel.assert_called_once()
+        panel.busy=False;panel._task_control.reset()
+        with patch('core.fast_commands.subprocess.Popen') as launched, \
+             patch.object(panel.agent,'start') as model,patch.object(panel.agent,'steer') as steering:
+            voice.task_requested.emit('direct-fast','打开浏览器')
+            app.processEvents()
+            model.assert_not_called();steering.assert_not_called();launched.assert_called_once()
+        with patch.object(voice,'notify_battleground') as narrate:
+            panel._task_started=time.monotonic()-20;panel._last_task_notice=0
+            panel._task_heartbeat()
+            narrate.assert_not_called()
+        panel.busy=False
         pet._queue_voice_gesture('head_shake')
         assert pet._pending_voice_gesture=='head_shake'
         pet._on_realtime_speaking(True)
@@ -57,6 +110,7 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         voice._handle_event(dict(type='response.audio_transcript.delta',response_id='r1',delta='好呀，我在这里陪你。'))
         voice._handle_event(dict(type='response.audio_transcript.delta',response_id='r1',delta='窗口收起来也能边聊边做事。'))
         app.processEvents()
+        pet._finish_agent_voice_launch(panel)
         assert '边聊边做事' in pet._agent_bubble.full_text
         assert not panel.isVisible()
         before_text=pet._agent_bubble.full_text
@@ -66,6 +120,7 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert pet._agent_bubble.full_text==before_text
         voice._handle_event(dict(type='response.audio_transcript.done',response_id='r1',transcript=pet._agent_bubble.full_text))
         QTest.mouseClick(pet._agent_bubble.text,Qt.LeftButton,pos=QPoint(10,10));app.processEvents()
+        pet._finish_agent_voice_launch(panel)
         assert panel.isVisible() and panel.active_id==ident
         assert panel.voice is voice and panel.voice_active
         panel.hide_button.click();app.processEvents()
@@ -90,6 +145,11 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert panel.agent.cancel_event.is_set(), 'End call must still stop its background task'
         assert not pet._agent_bubble.stop_button.isVisible()
         start.assert_called_once()
+    pet._anim.set_expression('sleepy')
+    with patch.object(panel.answer,'start'):
+        panel.send('你好')
+    assert pet._anim.expression=='happy'
+    panel.busy=False;panel._task_heartbeat_timer.stop()
     # Exercise the actual worker dispatch with a real bounded command, offline model.
     from core.desktop_access import DesktopAccess
     access=DesktopAccess(Path(folder)/'local-access.json');access.set_enabled(True)
@@ -108,6 +168,7 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert 'BUBBLE_AGENT_OK' in str(panel.store.messages(panel.active_id))
         assert pet._agent_bubble.full_text=='本机命令已经完成。'
     pet._self_mcp.close();panel.shutdown();panel.hide();pet._agent_bubble.hide()
+    diagnostics_patch.stop()
     pet._anim.stop();pet._status.stop();pet._tray.hide();pet.hide()
     print('PASS: hidden voice; streaming bubble; cancelled text ignored; same-chat reopen; positioning; stop; real local command via agent worker')
     print(str(output))

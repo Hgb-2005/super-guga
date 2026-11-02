@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "status": "approved",
+  "reviewer": "user / local transition preview",
+  "playback": "once",
+  "frames_sha256": "2c19eb252b3a9781a871d3d4b2839a749284e4ab0be8242905840eed2af0476f",
+  "checks": {
+    "identity": false,
+    "identity_variation_accepted": true,
+    "continuous_motion": true,
+    "no_ghosts": true,
+    "anatomy": true,
+    "loop_seam": false,
+    "transition_variation_accepted": true
+  },
+  "user_approval": {
+    "by": "user",
+    "quote": "执行吧，这个动作层面我觉得是ok的",
+    "scope": "look-up-step-v3 including the displayed resident transition"
+  },
+  "notes": [
+    "Appearance variation was shown and accepted; no claim of exact identity",
+    "One-shot only: different endpoints must never be labelled a seamless loop"
+  ]
+}

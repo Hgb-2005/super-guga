@@ -74,54 +74,35 @@ class PetWindow(QWidget):
     def __init__(self):
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self._config = ConfigManager()
+        from core.agent_memory import AgentMemoryStore
+        self._agent_memory = AgentMemoryStore()
+        from ui.multi_agent_window import MultiAgentManager
+        self._multi_agent=MultiAgentManager(self,self._agent_memory)
 
         # 窗口属性
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setMouseTracking(True)
 
-        # --- 咕嘎企鹅精灵动画器（含翅膀抖/呼吸/摇摆）---
-        # 3D 可选：ai_config.json 的 "3d_penguin": true 才启用（实验性）；
-        # 默认 2D 精灵保证稳定显示。3D 出图失败自动回退 2D。
+        # Appearance is independent of AI credentials and task execution.
+        # Both backends have the same logical canvas; switching keeps bubbles.
         self._anim3d = None
-        self._anim2d = None
-        _gl_log = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'pet_3d.log')
-        try:
-            import json as _json
-            with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                   'ai_config.json'), 'r', encoding='utf-8') as _f:
-                _cfg3d = _json.load(_f)
-            _want_3d = bool(_cfg3d.get('3d_penguin', False))
-        except Exception:
-            _want_3d = False
-        if _want_3d:
-            try:
-                from ui.gl_penguin import GLPenguinRenderer
-                g3 = GLPenguinRenderer(display_width=250)
-                if g3.available:
-                    self._anim3d = g3
-                    print('[pet] 3D 企鹅渲染器已启用')
-                    with open(_gl_log, 'w', encoding='utf-8') as _f:
-                        _f.write('3D enabled\n')
-                else:
-                    print('[pet] 3D 渲染不可用，回退 2D:', g3.error)
-                    with open(_gl_log, 'w', encoding='utf-8') as _f:
-                        _f.write('3D unavailable: %s\n' % g3.error)
-            except Exception as e:
-                print('[pet] 3D 初始化异常，回退 2D:', e)
-                try:
-                    with open(_gl_log, 'w', encoding='utf-8') as _f:
-                        _f.write('3D exception: %s\n' % e)
-                except Exception:
-                    pass
-        else:
-            print('[pet] 3D 未启用（ai_config 3d_penguin=false），使用 2D')
         self._anim2d = SpriteAnimator(self.RES_DIR, display_width=250)
-        self._anim = self._anim3d if self._anim3d is not None else self._anim2d
+        self._anim = self._anim2d
+        self._appearance_error = ''
+        self._set_avatar_mode('illustration' if '--avatar-2d' in sys.argv else self._config.avatar_mode,
+                              persist=False)
         self._iw = self._anim.width
         self._ih = self._anim.height
+        self._pet_scale = self._config.pet_scale
         self._anim.on_update = self.update
         self._anim.start()
+        from ui.pet_physics import DesktopPetPhysics
+        self._pet_physics=DesktopPetPhysics(self,self._anim2d,lambda:self._config.save_pos(self.x(),self.y()))
+        self._gaze_timer = QTimer(self)
+        self._gaze_timer.setInterval(80)
+        self._gaze_timer.timeout.connect(self._update_avatar_gaze)
+        self._gaze_timer.start()
 
         # --- TTS 语音引擎 ---
         self._tts = TTSEngine()
@@ -171,6 +152,10 @@ class PetWindow(QWidget):
         # --- UI ---
         self._init_sub_widgets()
         self._init_tray()
+        # Warm the native QMenu after startup so the first right-click does not
+        # pay stylesheet/DWM window creation latency.
+        self._pet_menu = None
+        QTimer.singleShot(1200, self._ensure_pet_menu)
 
         # --- 核心 ---
         self._status = StatusSystem(self)
@@ -230,7 +215,7 @@ class PetWindow(QWidget):
         self._save_timer.start()
 
         # --- 启动 ---
-        self.setFixedSize(self._iw, self._ih)
+        self.setFixedSize(round(self._iw*self._pet_scale), round(self._ih*self._pet_scale))
         screen = QApplication.primaryScreen()
         if screen:
             g = screen.geometry()
@@ -242,6 +227,8 @@ class PetWindow(QWidget):
         self._click_count = 0
 
         self._load_state()
+        from ui.screen_tools import ScreenTools
+        self._screen_tools=ScreenTools(self,register=QApplication.platformName()!='offscreen')
 
         QTimer.singleShot(200, self._force_top)
         # 咕嘎企鹅启动问候
@@ -254,6 +241,33 @@ class PetWindow(QWidget):
         self._bongo = BongoPanel(self)
         self._bongo.hide()
         self._bongo_on = False
+
+    def _set_pet_scale(self,value):
+        self._pet_scale=max(.4,min(1.,float(value)))
+        self._config.pet_scale=self._pet_scale
+        bottom=self.geometry().bottom();center=self.geometry().center().x()
+        w=round(self._iw*self._pet_scale);h=round(self._ih*self._pet_scale)
+        if self._bongo_on:
+            self._bongo.move(max(0,(w-self._bongo.width())//2),h)
+            w=max(w,self._bongo.width());h+=self._bongo.height()
+        self.setFixedSize(w,h);self.move(center-w//2,bottom-h+1)
+        screen=self.screen()
+        if screen:
+            area=screen.availableGeometry()
+            self.move(max(area.left(),min(self.x(),area.right()-self.width()+1)),max(area.top(),min(self.y(),area.bottom()-self.height()+1)))
+        if getattr(self,'_agent_bubble',None):self._agent_bubble.follow_pet()
+        self.update()
+
+    def _show_size_dialog(self):
+        from PyQt5.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QLabel,QSlider,QPushButton
+        dialog=QDialog(self);dialog.setWindowTitle('咕嘎大小');dialog.resize(320,130)
+        box=QVBoxLayout(dialog);label=QLabel();box.addWidget(label)
+        slider=QSlider(Qt.Horizontal);slider.setRange(40,100);slider.setValue(round(self._pet_scale*100));box.addWidget(slider)
+        def changed(value):
+            label.setText(str(value)+'% · 当前原尺寸为最大值');self._set_pet_scale(value/100)
+        slider.valueChanged.connect(changed);label.setText(str(slider.value())+'% · 当前原尺寸为最大值')
+        row=QHBoxLayout();reset=QPushButton('恢复原尺寸');reset.clicked.connect(lambda:slider.setValue(100));row.addWidget(reset)
+        done=QPushButton('完成');done.clicked.connect(dialog.accept);row.addWidget(done);box.addLayout(row);dialog.exec_()
 
     def _init_tray(self):
         self._tray = QSystemTrayIcon(self)
@@ -278,6 +292,11 @@ class PetWindow(QWidget):
         m.addSeparator()
         m.addAction("💬 咕嘎智能体 · 对话与项目").triggered.connect(self._open_agent_chat)
         m.addAction("🎙 长语音 · 咕嘎智能体").triggered.connect(self._open_agent_voice)
+        team=m.addMenu("👥 多智能体")
+        team.addAction("召唤 002 · 大肥鱼").triggered.connect(lambda:self._multi_agent.summon('002'))
+        team.addAction("召唤 003 · Dora").triggered.connect(lambda:self._multi_agent.summon('003'))
+        team.addAction("同时召唤大肥鱼和 Dora").triggered.connect(self._multi_agent.summon_pair)
+        team.addAction("让咕嘎与大肥鱼讨论…").triggered.connect(lambda:self._multi_agent.start_discussion(('001','002')))
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
         m.addAction("🎮 战棋实战操作").triggered.connect(self._open_bg_live)
@@ -287,9 +306,67 @@ class PetWindow(QWidget):
 
     # ==================== 绘制 ====================
 
+    def _set_avatar_mode(self, mode, persist=True):
+        """Switch without restarting voice, task workers, or the pet window."""
+        # The reference-shell prototype changes the approved silhouette in
+        # side views. Keep it out of normal launches and saved preferences.
+        if mode == '3d' and '--experimental-avatar-3d' not in sys.argv:
+            mode = 'illustration'
+        if persist and getattr(self, '_avatar_demo_running', False):
+            # A deliberate user choice cancels scheduled demo callbacks.
+            self._avatar_demo_token = None
+            self._avatar_demo_running = False
+            self._last_avatar_demo = {'state':'cancelled','reason':'manual_appearance_change'}
+        old = self._anim
+        target = self._anim2d
+        if mode == '3d':
+            try:
+                if self._anim3d is None:
+                    from ui.avatar_renderer import GLPenguinRenderer
+                    candidate = GLPenguinRenderer(display_width=250)
+                    if not candidate.available:
+                        error = candidate.error or '没有生成有效图像'
+                        candidate.close()
+                        raise RuntimeError(error)
+                    self._anim3d = candidate
+                target = self._anim3d
+                self._appearance_error = ''
+            except Exception as exc:
+                self._appearance_error = str(exc)
+                logging.warning('3D avatar fallback: %s', exc)
+        if target is not old:
+            target.set_expression(old.expression)
+            target.sunglasses = old.sunglasses
+            old_clock = old.motion.time if hasattr(old, 'motion') else old._time
+            new_clock = target.motion.time if hasattr(target, 'motion') else target._time
+            remaining = max(0, old._sunglasses_until - old_clock)
+            target._sunglasses_until = new_clock + remaining if old._sunglasses_until else 0
+            target.dancing = old.dancing
+            target.mouth_open = old.mouth_open
+            old.stop()
+            self._anim = target
+        self._anim.on_update = self.update
+        self._anim.start()
+        if persist:
+            self._config.avatar_mode = '3d' if target is self._anim3d else 'illustration'
+        self.update()
+
+    def _update_avatar_gaze(self):
+        if not self.isVisible():
+            return
+        from PyQt5.QtGui import QCursor
+        local = self.mapFromGlobal(QCursor.pos())
+        # Far-away pointer lets the character settle, avoiding permanent strain.
+        x = (local.x() - self.width() / 2) / max(1, self.width() * 1.5)
+        y = (local.y() - self.height() * .35) / max(1, self.height() * 1.5)
+        if abs(x) > 3 or abs(y) > 3:
+            x = y = 0
+        self._anim.look_at(x, y)
+
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
+        p.scale(self._pet_scale,self._pet_scale)
 
         ox, oy = self._anim_offset.x(), self._anim_offset.y()
 
@@ -304,10 +381,11 @@ class PetWindow(QWidget):
                     self._anim3d.stop()
                 except Exception:
                     pass
+                # Retain voice/accessory state; dispose broken GL after painting.
+                failed = self._anim3d
+                self._set_avatar_mode('illustration', persist=False)
                 self._anim3d = None
-                self._anim = self._anim2d
-                self._anim.on_update = self.update
-                self._anim.start()
+                QTimer.singleShot(0, failed.close)
                 self._anim.draw(p, ox, oy)
         else:
             self._anim.draw(p, ox, oy)
@@ -414,11 +492,13 @@ class PetWindow(QWidget):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            self._on_user_interaction()
             if self._voice_mode:
                 # 按住说话：按下开始录音
                 self._start_voice()
                 return
             self._drag_pos = e.globalPos()
+            self._pet_physics.press(e.globalPos())
             self._is_drag = False
             self.grabMouse()
 
@@ -427,6 +507,8 @@ class PetWindow(QWidget):
             delta = e.globalPos() - self._drag_pos
             if delta.manhattanLength() > 3:
                 self._is_drag = True
+                self._anim.set_dragging(True, delta.x() * 30)
+                self._pet_physics.sample(e.globalPos())
                 self.move(self.pos() + delta)
                 self._drag_pos = e.globalPos()
 
@@ -437,6 +519,8 @@ class PetWindow(QWidget):
                 self._stop_voice()
                 return
             self.releaseMouse()
+            self._anim.set_dragging(False)
+            self._pet_physics.release(self._is_drag)
             if not self._is_drag:
                 self._click()
             self._is_drag = False
@@ -452,47 +536,131 @@ class PetWindow(QWidget):
 
     # ==================== 右键 ====================
 
-    def contextMenuEvent(self, e):
+    def _ensure_pet_menu(self):
+        """Create the popup once and keep it alive between right-clicks.
+
+        Rebuilding a styled QMenu on every click made the first opening slow
+        and could leave a stale black popup owned by the translucent pet
+        window. A single top-level opaque menu is cheap to reopen.
+        """
+        menu = getattr(self, '_pet_menu', None)
+        if menu is not None:
+            return menu
         from PyQt5.QtGui import QPalette
-        menu = QMenu(self)
-        # 关键修复：强制不透明调色板，避免继承父窗口（透明）的背景
+        menu = QMenu(None)
+        self._pet_menu = menu
+        menu.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint |
+                            Qt.NoDropShadowWindowHint | Qt.WindowStaysOnTopHint)
+        menu.setAttribute(Qt.WA_TranslucentBackground, False)
+        menu.setWindowOpacity(1.0)
+        menu.setToolTipsVisible(True)
         pal = menu.palette()
-        pal.setColor(QPalette.Window, QColor('#191923'))
-        pal.setColor(QPalette.WindowText, QColor('white'))
-        pal.setColor(QPalette.Text, QColor('white'))
-        pal.setColor(QPalette.Highlight, QColor(70, 70, 90))
-        pal.setColor(QPalette.HighlightedText, QColor('white'))
+        pal.setColor(QPalette.Window, QColor('#fbfbfd'))
+        pal.setColor(QPalette.WindowText, QColor('#202124'))
+        pal.setColor(QPalette.Text, QColor('#202124'))
+        pal.setColor(QPalette.ButtonText, QColor('#202124'))
+        pal.setColor(QPalette.Highlight, QColor('#e6edff'))
+        pal.setColor(QPalette.HighlightedText, QColor('#111827'))
         menu.setPalette(pal)
         menu.setAutoFillBackground(True)
         menu.setAttribute(Qt.WA_StyledBackground, True)
         menu.setStyleSheet("""
-            QMenu { background-color: #191923; color: white; font-size: 12px;
-                    border: 1px solid #444; padding: 4px; }
-            QMenu::item { padding: 6px 24px 6px 16px; }
-            QMenu::item:selected { background-color: #46465a; }
-            QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
-            QMenu::icon { padding-left: 4px; }
+            QMenu { background-color: #fbfbfd; color: #202124;
+                    border: 1px solid #b8bcc7; padding: 5px;
+                    font-family: "Microsoft YaHei UI"; font-size: 12px; }
+            QMenu::item { background: transparent; padding: 7px 28px 7px 15px;
+                          border-radius: 4px; }
+            QMenu::item:selected { background-color: #e6edff; color: #111827; }
+            QMenu::item:disabled { color: #9298a4; }
+            QMenu::separator { height: 1px; background: #d6dae3; margin: 4px 8px; }
+            QMenu::icon { padding-left: 6px; }
         """)
-        try:
-            from core import log_reader as _netcut_logs
-            from core.netcut_budget import DisconnectBudget as _NetcutBudget
-            _netcut_state = _NetcutBudget().status((_netcut_logs.read_current_board() or {}).get('game_key', ''))
-            _netcut_text = f"⚡ 一键拔线（本局 {_netcut_state['count']}/9，F1）"
-        except Exception:
-            _netcut_text = "⚡ 一键拔线（每局最多 9 次，F1）"
-        menu.addAction(_netcut_text).triggered.connect(self._netcut)
+        battle = menu.addMenu('战旗')
+        self._menu_netcut = battle.addAction("⚡ 一键拔线（每局最多 9 次，F1）")
+        self._menu_netcut.triggered.connect(self._netcut)
         menu.addAction("💬 对话 · 咕嘎智能体").triggered.connect(self._open_agent_chat)
         menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
+        team = menu.addMenu("👥 多智能体")
+        team.addAction("召唤 002 · 大肥鱼").triggered.connect(lambda:self._multi_agent.summon('002'))
+        team.addAction("召唤 003 · Dora").triggered.connect(lambda:self._multi_agent.summon('003'))
+        team.addAction("同时召唤大肥鱼和 Dora").triggered.connect(self._multi_agent.summon_pair)
+        team.addAction("让咕嘎与大肥鱼讨论…").triggered.connect(lambda:self._multi_agent.start_discussion(('001','002')))
+        team.addAction("和当前咕嘎对话").triggered.connect(self._open_agent_chat)
+        menu.addAction('截图分析').triggered.connect(lambda:self._screen_tools.begin('ask'))
+        menu.addAction('解释').triggered.connect(lambda:self._screen_tools.begin('explain'))
+        menu.addAction('咕嘎大小…').triggered.connect(self._show_size_dialog)
+        stage = menu.addMenu("🎵 音乐与动作")
+        appearance = stage.addMenu("形象 · 可随时切换")
+        self._menu_avatar_3d = appearance.addAction("3D 开发预览（已暂停）")
+        self._menu_avatar_3d.setCheckable(True)
+        self._menu_avatar_3d.setEnabled('--experimental-avatar-3d' in sys.argv)
+        self._menu_avatar_3d.setToolTip('原版贴图优先；侧背壳预览不用于日常桌宠。')
+        self._menu_avatar_3d.triggered.connect(lambda: self._set_avatar_mode('3d'))
+        self._menu_avatar_2d = appearance.addAction("原版咕嘎 · 默认形象")
+        self._menu_avatar_2d.setCheckable(True)
+        self._menu_avatar_2d.triggered.connect(lambda: self._set_avatar_mode('illustration'))
+        demo = stage.addAction("3D 动作演示（已暂停，保留原画）")
+        demo.setEnabled('--experimental-avatar-3d' in sys.argv)
+        demo.triggered.connect(self._show_avatar_actions)
+        natural = stage.addMenu('自然动作 · 视频')
+        natural.addAction('困倦打盹').triggered.connect(lambda:self._perform_gesture('idle_doze'))
+        natural.addAction('双手比心').triggered.connect(lambda:self._perform_gesture('idle_heart'))
+        expressions = stage.addMenu('表情')
+        for label, expression in (('开心', 'happy'), ('傲娇', 'playful'), ('惊讶', 'surprised'),
+                                  ('困了', 'sleepy'), ('委屈', 'sad'), ('日常', 'normal')):
+            expressions.addAction(label).triggered.connect(
+                lambda checked=False, expr=expression: self._anim.set_expression(expr))
+        stage.addAction("暗中观察").triggered.connect(lambda: self._perform_gesture("sneak_peek"))
+        stage.addAction("暂停唱歌，聊一会儿").triggered.connect(
+            lambda: self._ensure_agent_panel().send("暂停唱歌"))
+        stage.addAction("继续唱歌").triggered.connect(
+            lambda: self._ensure_agent_panel().send("继续唱歌"))
+        self._menu_sunglasses = stage.addAction("戴上墨镜")
+        self._menu_sunglasses.triggered.connect(
+            lambda: self._perform_gesture('remove_sunglasses' if self._anim.sunglasses else 'sunglasses'))
+        self._menu_dance = stage.addAction("轻轻摆动")
+        self._menu_dance.triggered.connect(
+            lambda: self._perform_gesture('stop_dance' if self._anim.dancing else 'dance'))
+        stage.addAction("唱《晴天》").triggered.connect(
+            lambda: self._ensure_agent_panel().send('唱晴天'))
+        stage.addAction("停止唱歌").triggered.connect(
+            lambda: self._ensure_agent_panel().runtime.music.stop())
         talk_menu = menu.addMenu("🎙 原语音功能")
         talk_menu.addAction("千问长语音通话").triggered.connect(self._open_realtime_voice)
         talk_menu.addAction("千问语音设置").triggered.connect(self._configure_realtime_voice)
-        menu.addAction("📋 日志分析").triggered.connect(self._review_bg_logs)
-        menu.addAction("🎮 战局分析 / 实战操作").triggered.connect(self._open_bg_live)
-        menu.exec_(e.globalPos())
+        battle.addAction("📋 日志分析").triggered.connect(self._review_bg_logs)
+        battle.addAction("🎮 战局分析 / 实战操作").triggered.connect(self._open_bg_live)
+        # Force style/layout/native popup allocation while idle, so the first
+        # real opening only positions and paints the already-warm menu.
+        menu.ensurePolished()
+        menu.adjustSize()
+        menu.winId()
+        return menu
+
+    def contextMenuEvent(self, e):
+        self._on_user_interaction()
+        menu = self._ensure_pet_menu()
+        # Cached labels update without rebuilding the menu or reading Power.log.
+        self._menu_netcut.setText(
+            f"⚡ 一键拔线（本局 {int(getattr(self, '_netcut_count', 0) or 0)}/9，F1）")
+        self._menu_sunglasses.setText(
+            "摘下墨镜" if self._anim.sunglasses else "戴上墨镜")
+        self._menu_dance.setText(
+            "停止摇摆" if self._anim.dancing else "轻轻摆动")
+        self._menu_avatar_3d.setChecked(self._anim is self._anim3d)
+        self._menu_avatar_2d.setChecked(self._anim is self._anim2d)
+        menu.popup(e.globalPos())
+        e.accept()
 
     # ==================== 交互 ====================
 
+    def _on_user_interaction(self):
+        """Only explicit human input wakes a held sleepy expression."""
+        return self._anim2d.user_interaction()
+
     def _click(self):
+        self._anim2d.tap()
+        self._on_user_interaction()
         self._click_count += 1
         self._status.happy = min(100.0, self._status.happy + 3)
         # 招募阶段点击企鹅 = 讨论 → 未来阵容展望（轨道⑤；日志检测到在招募阶段才触发）
@@ -568,7 +736,7 @@ class PetWindow(QWidget):
     def _ensure_agent_panel(self):
         if self._agent_panel is None:
             from ui.agent_chat import AgentChatWindow
-            self._agent_panel = AgentChatWindow(self)
+            self._agent_panel = AgentChatWindow(self,memory=getattr(self,'_agent_memory',None))
         return self._agent_panel
 
     def _open_agent_chat(self):
@@ -586,8 +754,13 @@ class PetWindow(QWidget):
         QTimer.singleShot(120, lambda: self._finish_agent_voice_launch(panel))
 
     def _finish_agent_voice_launch(self, panel):
+        # A user may click the bubble during the short startup delay.
+        # Respect that explicit reopen instead of hiding the conversation again.
+        if panel.isVisible():
+            return
         if panel.voice_active:
-            panel.hide_to_pet()
+            # toggle_voice already keeps the panel hidden and creates the
+            # listening bubble. Do not overwrite a fast live reply 120 ms later.
             return
         panel.hide()
         message = panel.status.text() or '长语音未启动，请检查语音配置'
@@ -598,6 +771,7 @@ class PetWindow(QWidget):
             self._agent_panel.voice_button.setChecked(False)
 
     def _open_bubble_chat(self):
+        self._on_user_interaction()
         panel = self._ensure_agent_panel()
         ident = self._agent_bubble.conversation_id
         if ident and ident != panel.active_id and not (panel.busy or panel.voice_active):
@@ -719,6 +893,7 @@ class PetWindow(QWidget):
         self._hide_inline()
         if not text:
             return
+        self._on_user_interaction()
         if self._input_mode == 'tutor':
             self._tutor_ask(text)
         elif self._input_mode == 'quiz_answer':
@@ -948,6 +1123,7 @@ class PetWindow(QWidget):
             else:
                 self._say_with_expression("咕嘎？没听清，再说一次？", "surprised", "peek")
             return
+        self._on_user_interaction()
         self._ask_with_ctx(text)
 
     def _realtime_active(self):
@@ -995,6 +1171,7 @@ class PetWindow(QWidget):
         if self._realtime_voice:
             self._realtime_voice.deleteLater()
         self._realtime_voice = RealtimeVoice(self)
+        self._realtime_voice.transcript.connect(self._on_user_transcript)
         self._realtime_voice.speaking.connect(self._on_realtime_speaking)
         self._realtime_voice.status.connect(self._on_realtime_status)
         self._realtime_voice.failed.connect(self._on_realtime_status)
@@ -1002,6 +1179,10 @@ class PetWindow(QWidget):
         self._voice_call_panel = VoiceCallDialog(self._realtime_voice, self)
         self._voice_call_panel.show()
         self._realtime_voice.start()
+
+    def _on_user_transcript(self, who, text):
+        if who == '饲养员' and text.strip():
+            self._on_user_interaction()
 
     def _on_realtime_status(self, message):
         self._bubble_text = message
@@ -1071,17 +1252,56 @@ class PetWindow(QWidget):
             self._anim.trigger_action('tsundere' if name=='head_shake' else name)
         self.update()
 
+    def _show_avatar_actions(self):
+        """Finite local demo; no microphone, API calls, music or task side effects."""
+        if '--experimental-avatar-3d' not in sys.argv:
+            self._last_avatar_demo = {'state':'disabled','reason':'preserve_original_artwork'}
+            return
+        if getattr(self, '_avatar_demo_running', False):
+            return
+        old_mode = '3d' if self._anim is self._anim3d else 'illustration'
+        old_glasses, old_dance = self._anim.sunglasses, self._anim.dancing
+        self._set_avatar_mode('3d', persist=False)
+        if self._anim is not self._anim3d:
+            self._show_agent_bubble('当前 3D 动作渲染不可用，已保留原版形象。')
+            return
+        self._avatar_demo_running = True
+        self._last_avatar_demo = {'state':'running','original_mode':old_mode}
+        token = self._avatar_demo_token = object()
+        def schedule(ms, callback):
+            QTimer.singleShot(ms, lambda: callback() if getattr(self, '_avatar_demo_token', None) is token else None)
+        self._perform_gesture('stop_dance')
+        self._perform_gesture('spin')
+        schedule(2600, lambda: self._perform_gesture('sneak_peek'))
+        schedule(6000, lambda: self._perform_gesture('wave'))
+        def dance():
+            self._perform_gesture('sunglasses')
+            self._perform_gesture('dance')
+        schedule(8200, dance)
+        def finish():
+            self._perform_gesture('dance' if old_dance else 'stop_dance')
+            self._perform_gesture('sunglasses' if old_glasses else 'remove_sunglasses')
+            self._avatar_demo_running = False
+            self._avatar_demo_token = None
+            self._set_avatar_mode(old_mode, persist=False)
+            self._last_avatar_demo = {'state':'completed','restored_mode':old_mode}
+        schedule(15000, finish)
+
     def _queue_voice_gesture(self,name):
-        if self._realtime_active() and self._realtime_voice.is_speaking:
+        if name in ('sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','idle_doze','idle_heart') or (self._realtime_active() and self._realtime_voice.is_speaking):
             self._perform_gesture(name)
         else:
             self._pending_voice_gesture=name
 
     def _on_tts_started(self, text: str):
+        panel=getattr(self,'_agent_panel',None)
+        if panel:self._multi_agent.speaking(panel.active_agent_id,True)
         self._talk_timer.start()
         self._talk_count = 0
 
     def _on_tts_finished(self):
+        panel=getattr(self,'_agent_panel',None)
+        if panel:self._multi_agent.speaking(panel.active_agent_id,False)
         self._talk_timer.stop()
         self._anim.mouth_open = 0.0
         self.update()
@@ -1125,11 +1345,11 @@ class PetWindow(QWidget):
 
     def _show_bongo(self):
         self._bongo_on = True
-        self._bongo.move(max(0, (self._iw - self._bongo.width()) // 2),
-                         self._ih)
+        self._bongo.move(max(0, (round(self._iw*self._pet_scale) - self._bongo.width()) // 2),
+                         round(self._ih*self._pet_scale))
         self._bongo.show()
-        w = max(self._iw, self._bongo.width())
-        self.setFixedSize(w, self._ih + self._bongo.height())
+        w = max(round(self._iw*self._pet_scale), self._bongo.width())
+        self.setFixedSize(w, round(self._ih*self._pet_scale) + self._bongo.height())
 
     def _act(self, name):
         a = get_action(name)
@@ -1372,16 +1592,30 @@ class PetWindow(QWidget):
     def _on_game_over(self, board):
         """对局结束（自动观战检测到）：记录战绩 → 按最近战绩调侃播报"""
         from core import match_history
-        ps = board.get('playstate', '')
-        result = 'win' if ps == 'WON' else ('concede' if ps == 'CONCEDED' else 'loss')
-        h = match_history.record_result(result=result, place=board.get('place'),
+        ps = str(board.get('playstate') or '').upper()
+        try:
+            place = int(board.get('place') or 0)
+        except (TypeError, ValueError):
+            place = 0
+        if place <= 0 and ps == 'FINAL_GAMEOVER':
+            # Unknown result: never pollute persistent history with a guessed
+            # win/loss record.
+            return
+        if place == 1 or ps == 'WON':
+            result = 'win'
+        elif ps == 'CONCEDED':
+            result = 'concede'
+        else:
+            result = 'loss'
+        h = match_history.record_result(result=result, place=place or board.get('place'),
+                                        game_key=board.get('game_key'),
                                         turns=board.get('turn'))
         s = match_history.stats(h)
         roast = match_history.build_roast(h) or "咕嘎～这局打完了！"
         expr = 'happy' if result == 'win' else 'sad'
         action = 'bounce' if result == 'win' else 'shake'
         self._say_with_expression(roast, expr, action)
-        print(f"[战绩] 记录:{result} 名次:{board.get('place')} 最近{s['total']}场:"
+        print(f"[战绩] 记录:{result} 名次:{place or board.get('place')} 最近{s['total']}场:"
               f"{match_history.format_line(h)}")
 
     def _show_history(self):
@@ -1797,6 +2031,9 @@ class PetWindow(QWidget):
         self._config.save_status(s["hunger"], s["happy"], s["energy"])
 
     def _quit(self):
+        self._pet_physics.stop()
+        if getattr(self,'_screen_tools',None):self._screen_tools.stop()
+        if getattr(self,'_multi_agent',None):self._multi_agent.close()
         self._agent_bubble.hide()
         self._self_mcp.close()
         if self._agent_panel:
@@ -1806,7 +2043,7 @@ class PetWindow(QWidget):
         self._save_state()
         for _t in (self._bg_timer, self._watch_timer, self._save_timer,
                    self._bounce_timer, self._talk_timer, self._bubble_timer,
-                   self._hover_timer):
+                   self._hover_timer, self._gaze_timer):
             try:
                 _t.stop()
             except Exception:
@@ -1814,6 +2051,8 @@ class PetWindow(QWidget):
         try:
             self._tts.stop()
             self._anim.stop()
+            if self._anim3d is not None:
+                self._anim3d.close()
             self._hook.stop()
             self._status.stop()
         except Exception:

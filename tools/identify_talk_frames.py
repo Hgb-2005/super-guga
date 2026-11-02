@@ -8,10 +8,12 @@ import time
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
-NODE = r'C:\Users\Admin（无密码）\.zcode\tools\node-v24.19.0-win-x64\node.exe'
-CLIENT = r'C:\Users\Admin（无密码）\.zcode\mcp\glm-vision\test-client.js'
-KEY = '4c9c7dd548e64d2888cd97f1c8fbaf08.OS0aCNKP9k37VlaF'
-IMGDIR = r'C:\Users\Admin（无密码）\Desktop\图片库\咕嘎说话动作'
+NODE = os.environ.get('NODE_EXE', 'node')
+CLIENT = os.environ.get('GLM_VISION_CLIENT', '')
+KEY = os.environ.get('GLM_API_KEY', '')
+IMGDIR = os.environ.get('GUGA_IMAGE_LIBRARY', 'samples/talk-frames')
+if not CLIENT or not KEY:
+    raise SystemExit('请设置 GLM_VISION_CLIENT 和 GLM_API_KEY 后再运行此开发工具')
 
 # 只要新图（排除主表情库里已有的两张）
 EXCLUDE = ('041507d1', '7771be0b')

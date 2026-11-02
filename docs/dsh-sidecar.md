@@ -1,6 +1,10 @@
 # DSH sidecar 接入
 
+2026-11-02 更新：现在非快捷执行任务默认交给 DSH，不再只由 SelfAgent 偶尔选用。MCP 工具桥、长期记忆、任务续接和回滚详见 [个人智能体升级](dsh-personal-upgrade-20261102.md)。以下保留底层协议说明。
+
 咕嘎把长任务交给独立 `dsh` 进程，避免让两套 Agent 在同一个 Qt 进程里争抢会话、麦克风和工具状态。咕嘎外壳负责声音、权限、气泡、停止和汇报，DSH 负责长时多阶段执行。
+
+2026-11-02 已在本机验证 `0.2.1-rc.5`。咕嘎会把自己的 `ai_config.json` 中 `OPENCODE_GO_API_KEY` 注入 sidecar，开发态和打包态都一致；不要再依赖 DSH 自己保存的过期 Key。旧版本可通过 `tools/rollback_dsh.ps1` 回到 `0.1.7-rc.2`。
 
 ## 前置条件
 
@@ -32,6 +36,8 @@
 
 - `session`：记录 DSH session ID。
 - `status/turn_start/step_start`：节流后显示进度，避免每步都发语音。
+- `tool_call/tool_result`：新版会在 NDJSON 里报告工具名称和真实结果；当前咕嘎保留完整事件供记录，后续应只展示工具名、状态和可核对摘要，不展示密钥或完整输出。
+- `text/thinking/final`：最终文本以 `final` 为准；thinking 只作诊断，不应作为完成证据或向用户暴露隐藏推理。
 - `dsh_completed`：仅按 DSH 最终事件和退出码确定成功/失败。
 - stderr 只保存为错误摘要，不朗读密钥或完整响应体。
 

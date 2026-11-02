@@ -8,6 +8,25 @@ class ConfigManager:
         # 独立存档命名空间（不与黑猫共用，避免继承低心情导致"常年哭泣"）
         self._s = QSettings("GugaPenguinPet", "GugaPenguin")
 
+    @property
+    def pet_scale(self):
+        return max(.4,min(1.,self._s.value('appearance/scale',1.,type=float)))
+
+    @pet_scale.setter
+    def pet_scale(self,value):
+        self._s.setValue('appearance/scale',max(.4,min(1.,float(value))))
+
+    @property
+    def avatar_mode(self) -> str:
+        mode = self._s.value('appearance/mode', 'illustration', type=str)
+        return mode if mode in ('3d', 'illustration') else 'illustration'
+
+    @avatar_mode.setter
+    def avatar_mode(self, mode: str):
+        if mode not in ('3d', 'illustration'):
+            raise ValueError('Unknown avatar mode')
+        self._s.setValue('appearance/mode', mode)
+
     # ---- 窗口位置 ----
     def save_pos(self, x: int, y: int):
         self._s.setValue("pos/x", x)

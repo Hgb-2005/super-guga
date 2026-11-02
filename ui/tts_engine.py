@@ -119,7 +119,7 @@ class TTSEngine(QObject):
             return False
 
     # ---- 对外: 说话 ----
-    def speak(self, text: str):
+    def speak(self, text: str, voice_profile=None):
         if not text.strip():
             return
         text = strip_punct(text)
@@ -133,7 +133,7 @@ class TTSEngine(QObject):
         self.speak_started.emit(text)
         threading.Thread(
             target=self._synth_worker,
-            args=(token, text),
+            args=(token,text,dict(voice_profile)) if voice_profile else (token,text),
             daemon=True,
         ).start()
 
@@ -153,7 +153,7 @@ class TTSEngine(QObject):
         self._cleanup_temp()
 
     # ---- 后台线程: 合成 ----
-    def _synth_worker(self, token: int, text: str):
+    def _synth_worker(self, token: int, text: str, voice_profile=None):
         """后台线程只负责生成 mp3 文件; 完成后发信号回主线程"""
         tmp_path = None
         try:
@@ -165,8 +165,9 @@ class TTSEngine(QObject):
 
             success = False
             if self._use_edge:
-                success = self._synth_edge(text, tmp_path)
-            if not success and self._use_doubao:
+                success = self._synth_edge(text,tmp_path,voice_profile) if voice_profile else self._synth_edge(text,tmp_path)
+            # A failed companion voice must not silently become Guga's fallback.
+            if not success and self._use_doubao and not voice_profile:
                 success = self._synth_doubao(text, tmp_path)
 
             if not success:
@@ -191,16 +192,16 @@ class TTSEngine(QObject):
             except Exception:
                 pass
 
-    def _synth_edge(self, text: str, out_path: str) -> bool:
+    def _synth_edge(self, text: str, out_path: str, voice_profile=None) -> bool:
         """edge-tts 合成, 加超时防止网络卡死"""
         try:
             import edge_tts
 
             async def _synth():
                 communicate = edge_tts.Communicate(
-                    text, self.EDGE_VOICE,
-                    rate=self._current_rate(),
-                    pitch=self.EDGE_PITCH,
+                    text, (voice_profile or {}).get('edge_voice',self.EDGE_VOICE),
+                    rate=(voice_profile or {}).get('edge_rate',self._current_rate()),
+                    pitch=(voice_profile or {}).get('edge_pitch',self.EDGE_PITCH),
                     volume="+0%"
                 )
                 await communicate.save(out_path)

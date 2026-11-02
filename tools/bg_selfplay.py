@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--engine", required=True)
     parser.add_argument("--checkpoint")
     parser.add_argument("--games", type=int, default=1)
+    parser.add_argument('--max-seconds', type=int, default=120, help='Finite whole-run budget, 30..600 seconds')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", required=True)
     parser.add_argument('--cloud-calls',type=int,default=0,help='Explicit DeepSeek request budget, 0..128; consumes existing plan quota')
@@ -22,6 +23,8 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.games <= 100:
         parser.error("games must be between 1 and 100")
+    if not 30 <= args.max_seconds <= 600:
+        parser.error('max-seconds must be between 30 and 600')
     if not 0 <= args.cloud_calls <= 128 or (args.cloud_calls and args.checkpoint):
         parser.error('cloud-calls must be 0..128 and cannot combine with checkpoint')
     if args.cloud_calls and not args.cloud_ledger:
@@ -31,14 +34,16 @@ def main():
             worker_env = os.environ.copy()
             worker_env["PYTHONHASHSEED"] = str(args.seed % (2**32))
             return subprocess.run([sys.executable, *sys.argv, "--worker"],
-                                  timeout=min(7200, args.games*120+15), env=worker_env).returncode
+                                  timeout=args.max_seconds+5, env=worker_env).returncode
         except subprocess.TimeoutExpired:
             print("Offline battle worker terminated at wall-time budget", file=sys.stderr)
             return 124
     output = Path(args.output)
     if output.exists():
         raise FileExistsError("Choose a new output file; existing battles are not overwritten")
-    arena = Arena(load_engine(args.engine))
+    import time
+    deadline = time.monotonic()+args.max_seconds
+    arena = Arena(load_engine(args.engine), seconds=args.max_seconds)
     policy = teacher_policy
     if args.checkpoint:
         import torch
@@ -53,6 +58,10 @@ def main():
         cloud = CloudBudget(load_config(),calls=args.cloud_calls,seconds=240,
                             ledger=args.cloud_ledger)
     for i in range(args.games):
+        remaining = deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Offline battle whole-run budget reached')
+        arena.seconds = remaining
         policies = [DeepSeekSeat(cloud,seat) for seat in range(8)] if cloud else [policy]*8
         r = arena.run(policies, args.seed+i, collect=True)
         results.append(r)

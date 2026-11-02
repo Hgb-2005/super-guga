@@ -79,6 +79,22 @@ class AuthorizedApps:
         self._save(entries)
 
     def open(self, name):
+        # Reuse existing windows even when their title is a document/chat title.
+        if self.access.enabled:
+            from core.window_inventory import list_windows
+            windows=list_windows(name)
+            if len(windows)==1:
+                from core.computer_control import ComputerControl
+                result=ComputerControl(self.access).execute(dict(action='focus',hwnd=windows[0]['hwnd']))
+                return dict(name=name,**result,hwnd=windows[0]['hwnd'],reused_existing=True,
+                    verified_running=True,launch_requested=False,
+                    message='已找到并聚焦现有窗口；继续observe/accessibility核对，不需要重新启动')
+            if len(windows)>1:
+                return dict(name=name,reused_existing=False,launch_requested=False,selection_required=True,
+                    windows=windows,message='找到多个运行中的窗口；按当前任务选择hwnd并focus，不要重复启动')
+        from core.fast_commands import BROWSER_NAMES, _open_app
+        if name in BROWSER_NAMES:
+            return dict(name=name,**_open_app(name))
         entries = self.available()
         if name not in entries:
             target=Path(name).expanduser()

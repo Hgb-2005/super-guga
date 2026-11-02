@@ -50,6 +50,31 @@ class RealtimeAgentTests(unittest.TestCase):
         self.assertEqual([c['action'] for c in commands],['stop_call'])
         self.assertTrue(any(c.args[0].get('type')=='response.cancel' for c in send.call_args_list))
 
+    def test_fast_tool_waits_for_real_result_and_deduplicates_polite_transcript(self):
+        engine=self.engine();commands=[];engine.fast_command.connect(commands.append)
+        event=dict(type='response.function_call_arguments.done',response_id='r1',call_id='browser',
+            name='ask_deepseek',arguments=json.dumps({'request':'打开浏览器'}))
+        with patch.object(engine,'resolve_task') as resolve:
+            engine._handle_event(event)
+            resolve.assert_not_called()
+            engine._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='请帮我打开浏览器'))
+            self.assertEqual(len(commands),1)
+            engine.complete_fast_command(commands[0]['fast_id'],dict(ok=False,error='没有默认浏览器'))
+            self.assertEqual(resolve.call_args.args[0],'browser')
+            result=resolve.call_args.args[1]
+            self.assertFalse(result['ok']);self.assertFalse(result['silent'])
+            self.assertIn('没有默认浏览器',result['answer'])
+
+    def test_successful_transcript_execution_is_shared_with_later_tool(self):
+        engine=self.engine();commands=[];engine.fast_command.connect(commands.append)
+        engine._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='帮我打开浏览器'))
+        engine.complete_fast_command(commands[0]['fast_id'],dict(ok=True,message='已请求默认浏览器打开'))
+        with patch.object(engine,'resolve_task') as resolve:
+            engine._handle_event(dict(type='response.function_call_arguments.done',response_id='r1',call_id='browser',
+                name='ask_deepseek',arguments=json.dumps({'request':'打开默认浏览器'})))
+            self.assertEqual(len(commands),1)
+            self.assertTrue(resolve.call_args.args[1]['ok']);self.assertTrue(resolve.call_args.args[1]['silent'])
+
     def test_tool_deduplicates_across_all_native_events(self):
         engine = self.engine()
         calls = []
@@ -60,7 +85,28 @@ class RealtimeAgentTests(unittest.TestCase):
         engine._handle_event(dict(type='response.output_item.done', response_id='r1', item=item))
         with patch.object(engine, '_record_usage'):
             engine._handle_event(dict(type='response.done', response=dict(id='r1', output=[item])))
+        engine._flush_pending_requests(now=10**12)
         self.assertEqual(calls, [('c1', '检查当前记事本窗口状态')])
+
+    def test_verbatim_asr_overrides_model_paraphrase_before_long_task_starts(self):
+        engine=self.engine();commands=[];calls=[]
+        engine.fast_command.connect(commands.append);engine.task_requested.connect(lambda *args:calls.append(args))
+        engine._handle_event(dict(type='response.function_call_arguments.done',response_id='r1',call_id='c1',
+            name='ask_deepseek',arguments=json.dumps({'request':'用户反馈浏览器没有打开，请排查并修复桌宠项目'})))
+        self.assertFalse(calls)
+        engine._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='打开浏览器'))
+        self.assertFalse(calls)
+        self.assertEqual(len(commands),1)
+        self.assertFalse(engine._pending_requests)
+
+    def test_vague_testing_phrase_does_not_start_source_code_investigation(self):
+        engine=self.engine();calls=[];engine.task_requested.connect(lambda *args:calls.append(args))
+        engine._handle_event(dict(type='response.function_call_arguments.done',response_id='r1',call_id='c1',
+            name='ask_deepseek',arguments=json.dumps({'request':'请确认具体要测试什么，并读取项目源码'})))
+        with patch.object(engine,'resolve_task') as result:
+            engine._handle_event(dict(type='conversation.item.input_audio_transcription.completed',transcript='现在进行测试'))
+            self.assertFalse(calls)
+            self.assertIn('请直接说',result.call_args.args[1]['answer'])
 
     def test_transcription_does_not_execute_a_task(self):
         engine = self.engine()

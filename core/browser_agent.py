@@ -1,0 +1,37 @@
+"""Browser capability for the reasoning agent, with actual post-action observation."""
+from urllib.parse import urlsplit
+import time
+
+def validate_url(url):
+    url=str(url).strip()
+    parsed=urlsplit(url)
+    if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError('需要有效的 http/https 网址；网站名称先由模型解析或搜索')
+    if len(url)>3000:raise ValueError('网址过长')
+    return url
+
+def open_page(computer,url,cancel):
+    from core.browser_launch import launch,default_executable
+    import psutil,win32process
+    url=validate_url(url);executable=default_executable()
+    receipt=launch(url)
+    if cancel.wait(.6):return dict(ok=False,launch_requested=True,error='导航已提交，随后任务被停止，未复查')
+    candidates=[]
+    for window in computer.execute(dict(action='windows'),cancel)['windows']:
+        try:
+            pid=win32process.GetWindowThreadProcessId(window['hwnd'])[1]
+            path=psutil.Process(pid).exe()
+            if executable and path.casefold()==str(executable).casefold():candidates.append(window)
+        except (OSError,psutil.Error):pass
+    if not candidates:return dict(ok=False,launch_requested=True,error='浏览器已接受网址，但尚未定位窗口；使用 computer.windows 继续核对，不要重复启动')
+    preferred=[w for w in candidates if '浏览器' in w['title']] or candidates
+    window=preferred[0]
+    try:
+        computer.execute(dict(action='focus',hwnd=window['hwnd']),cancel)
+        observation=computer.execute(dict(action='observe',hwnd=window['hwnd']),cancel)
+        accessibility=computer.execute(dict(action='accessibility',hwnd=window['hwnd']),cancel)
+    except (RuntimeError,ValueError,OSError) as exc:
+        return dict(ok=False,launch_requested=True,error='网址已提交，但未完成页面验证：'+str(exc))
+    return dict(ok=True,result=dict(observation,url_requested=url,launch_requested=True,
+        page_verified=False,accessibility=accessibility,
+        message='真实浏览器窗口已观察；请根据截图/地址栏复查目标网址和加载结果，不能仅凭启动回执声称打开成功'))

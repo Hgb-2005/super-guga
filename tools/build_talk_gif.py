@@ -12,7 +12,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_bufferin
 from PIL import Image, ImageFilter
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = r'C:\Users\Admin（无密码）\Desktop\图片库\咕嘎说话动作'
+SRC = os.environ.get('GUGA_TALK_FRAMES', 'samples/talk-frames')
 OUT_GIF = os.path.join(PROJECT, 'resources', 'stickers', 'talk.gif')
 EXCLUDE = ('041507d1', '7771be0b')
 

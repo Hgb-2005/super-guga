@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "status": "approved",
+  "reviewer": "Codex visual review + user direction",
+  "playback": "once",
+  "frames_sha256": "154b62c4f74e963412cccd12eb9fe3ae4e51b2d078e5ca703f6c2ea4ad90bedb",
+  "checks": {
+    "identity": true,
+    "continuous_motion": true,
+    "no_ghosts": true,
+    "anatomy": true,
+    "entry_exit_transition": false,
+    "transition_variation_accepted": true,
+    "loop_seam": false
+  },
+  "user_approval": {
+    "by": "user",
+    "quote": "把这两个生成的动图，放入咕嘎的自然常态触发动作里，跟dsh pet 一样",
+    "scope": "Both supplied Doubao animations as natural idle triggers"
+  },
+  "notes": [
+    "239 native 24fps frames; normalized to fixed 245x352 canvas",
+    "No temporal blending or repeated frames; one-shot with resident recovery"
+  ]
+}

@@ -98,11 +98,12 @@ def main():
     metrics = dict(profile=PROFILE, engine_revision=arena.e["revision"], seed=args.seed,
                    python_hash_seed=os.environ.get("PYTHONHASHSEED"),
                    device="cpu", torch_version=torch.__version__, config=vars(args),
-                   limitations=["neutral heroes; no hero powers/trinkets/anomalies",
-                                "no tavern spell purchases or generated spell plays",
+                   limitations=["neutral training heroes; exported current heroes/trinkets/anomalies are not yet activated",
                                 "fixed first-option helper for targeting/discover",
-                                "all simulator pool tribes enabled; not a live patch ruleset",
-                                "features do not encode card identity or complete effect text"],
+                                "unscripted current cards use vanilla stat/keyword fallback",
+                                "all simulator pool tribes enabled; live lobby race rotation is not sampled",
+                                "10-bit card identity hash; complete effect text is not encoded"],
+                   data_coverage=arena.e.get("coverage"),
                    games=[], evaluations={})
     source_root = Path(__file__).resolve().parents[1]
     metrics["source_sha256"] = {}
@@ -242,8 +243,10 @@ def main():
                         feature_dim=FEATURE_DIM, state_dict=model.state_dict()), output / "ppo.pt")
         baseline = metrics["evaluations"]["heuristic"]
         final = metrics["evaluations"]["ppo"]
+        coverage=arena.e.get("coverage") or {}
         metrics["admission"] = dict(deployable=False,
-            reason="Restricted obsolete rules profile; live deployment requires current-rule validation",
+            reason="Current-data candidate is not promoted: effect-script gaps and insufficient independent evaluation",
+            patch=arena.e.get("patch"),effect_coverage=coverage,
             mean_placement_gain=baseline["mean_placement"]-final["mean_placement"],
             top4_gain=final["top4_rate"]-baseline["top4_rate"],
             minimum_evaluation_games=64, sufficient_sample=args.eval_games >= 64)

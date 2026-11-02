@@ -21,6 +21,27 @@ def state():
 
 
 class LiveTests(unittest.TestCase):
+    def test_play_receipt_must_match_requested_and_actual_position(self):
+        before=state()
+        action=next(a for a in candidates(before) if a['kind']=='PLAY')
+        after=copy.deepcopy(before)
+        after['entities']['12'].update(ZONE='PLAY', ZONE_POSITION=action['position'])
+        selected=[dict(option_set_id=4,fields=dict(selectedOption=2,selectedPosition=action['position']))]
+        self.assertTrue(acknowledged(before,after,action,selected))
+        after['entities']['12']['ZONE_POSITION']=action['position']+1
+        self.assertFalse(acknowledged(before,after,action,selected))
+        after['entities']['12']['ZONE_POSITION']=action['position']
+        selected[0]['fields']['selectedPosition']=action['position']+1
+        self.assertFalse(acknowledged(before,after,action,selected))
+
+    def test_missing_entity_is_not_a_freeze_acknowledgement(self):
+        before=state(); after=copy.deepcopy(before)
+        before['entities']['11']['FROZEN']=0
+        del after['entities']['11']
+        action=dict(kind='FREEZE',option=3,entity_id='13')
+        selected=[dict(option_set_id=4,fields=dict(selectedOption=3))]
+        self.assertFalse(acknowledged(before,after,action,selected))
+
     def test_only_client_valid_candidates(self):
         actions=candidates(state())
         self.assertEqual({a['kind'] for a in actions},{'BUY','PLAY'})

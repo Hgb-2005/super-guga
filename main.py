@@ -23,9 +23,14 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("咕嘎企鹅桌宠")
     app.setOrganizationName("BlackCatPet")
+    # This is a tray companion. Closing a transient menu/dialog must not end
+    # the desktop process; the existing explicit Quit action still does that.
+    app.setQuitOnLastWindowClosed(False)
 
     # 创建并显示窗口
     window = PetWindow()
+    if '--summon-fish' in sys.argv:
+        QTimer.singleShot(400, lambda:window._multi_agent.summon('002'))
     # Only an explicit launch flag starts capture; normal startup stays quiet.
     if '--voice' in sys.argv:
         QTimer.singleShot(300, window._open_agent_voice)

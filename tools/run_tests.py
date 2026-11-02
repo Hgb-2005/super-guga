@@ -81,7 +81,7 @@ if r.get('ok'):
 
 print('== 5. 视觉模块（GLM 实测，用现有截图）==')
 from core import vision
-shot = r'C:\Users\Admin（无密码）\Pictures\Screenshots\屏幕截图 2026-08-04 104510.png'
+shot = os.environ.get('GUGA_TEST_SCREENSHOT', '')
 if os.path.exists(shot):
     res = vision.analyze_board_image(shot, '简要描述这张截图内容')
     check('视觉API调用', bool(res) and not res.startswith('❌'), (res or '')[:100])

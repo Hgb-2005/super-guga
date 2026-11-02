@@ -38,8 +38,8 @@
 ## 八席模拟和训练
 
 ```powershell
-python tools/bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM' --games 1 --seed 20261019 --cloud-calls 8 --cloud-ledger 'runtime/bg-lab/your-phase-budget.json' --output 'runtime/bg-lab/new-expert-battles.json'
-python tools/train_bg_selfplay.py --engine 'C:/Users/Admin（无密码）/Desktop/Vibe oding/output/guga-selfplay-lab-20261016/HSBRSIM' --expert-battles 'runtime/bg-lab/new-expert-battles.json' --output 'runtime/bg-lab/new-expert-training' --bc-games 1 --rl-games 2 --eval-games 8 --max-seconds 90
+python tools/bg_selfplay.py --engine '<你的 HSBRSIM 引擎目录>' --games 1 --seed 20261019 --cloud-calls 8 --cloud-ledger 'runtime/bg-lab/your-phase-budget.json' --output 'runtime/bg-lab/new-expert-battles.json'
+python tools/train_bg_selfplay.py --engine '<你的 HSBRSIM 引擎目录>' --expert-battles 'runtime/bg-lab/new-expert-battles.json' --output 'runtime/bg-lab/new-expert-training' --bc-games 1 --rl-games 2 --eval-games 8 --max-seconds 90
 ```
 
 输出路径须新建。八个席位拥有各自策略上下文，云端共享显式请求预算，从第 3 回合起，每席每回合至多一次专家选择；其他动作由规则策略完成并标注来源。不是八个大模型每步无限请求。`--cloud-calls` 默认 0，最大 128，消耗已配置的官方 Go 模型套餐；HTTP/解析/候选验证失败后停用本次云端，不重试、不切换服务。只将该席可见棋盘、手牌和商店发给模型，不泄露其他席位隐藏信息。
