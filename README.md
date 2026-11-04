@@ -5,6 +5,8 @@
 
 **下载后快速开始：** 双击 `首次配置.bat` 填写聊天 API 与实时语音 API，再双击 `启动企鹅.bat`。完整环境、两条模型链路、免费额度保护和权限说明见 [公开版快速开始](docs/public-quickstart.md)。桌面控制优先使用 UIA 结构化控件，内存读取只用于明确支持的只读集成，见 [快速桌面控制与内存边界](docs/fast-desktop-control.md)。
 
+**2026-11-04 更新：** 长对话快速打开网站、打断竞态和自动续接已修复；本地快捷操作从语音转写和文字补充入口直接执行，启动浏览器不阻塞对话界面。同步发布常用形态、用户可删记忆、联网问答、屏幕辅助和后台任务进度等最新源码。详细验证和已知边界见 [长语音修复与验收](docs/long-voice-stability-20261104.md)。GitHub 的 Download ZIP / `git pull` 获取最新源码；历史 EXE 和私人测试包不代表本次版本。
+
 长语音的时长、上下文、打断、断线、额度与任务执行边界见 [实时语音能力边界](docs/realtime-voice-boundaries.md)；Computer Use 各路线和 UIA、DOM、内存在自动化中的作用见 [Computer Use 路线与边界](docs/computer-use-landscape.md)。
 
 实时语音默认不做声纹匹配，无需录入主人声音；DSH 长任务 sidecar 的安装、登录和事件协议见 [DSH sidecar 接入](docs/dsh-sidecar.md)。

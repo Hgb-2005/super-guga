@@ -18,6 +18,8 @@ class AppRuntime:
         self.dsh.tools_enabled=True
         self.dsh.archive.recover_once()
         self.dsh.event.connect(panel._dsh_event)
+        from core.screen_share import ScreenShareController
+        self.screen_share=ScreenShareController(panel)
         from core.music_performance import MusicPerformance
         self.music=MusicPerformance(panel)
         self.music.performance_event.connect(panel._music_event)
@@ -47,6 +49,58 @@ class AppRuntime:
         except (OSError,ValueError,TypeError):pass
 
     def execute(self, name, args):
+        if name=='screen_share':
+            action=args.get('action')
+            if action=='start':
+                if not self.panel.voice_active:
+                    raise RuntimeError('共享屏幕只在长语音对话中自动启用；当前没有长语音通话')
+                self.panel._screen_share_manual_stop=False
+                return self.screen_share.start(args.get('fps'),'call')
+            if action=='stop':
+                if self.panel.voice_active:self.panel._screen_share_manual_stop=True
+                return self.screen_share.stop()
+            if action=='status':return self.screen_share.status()
+            if action=='context':return self.screen_share.context(max(1,min(60,int(args.get('max_age',12)))))
+            if action=='assist':return self.screen_share.assist_context(max(1,min(60,int(args.get('max_age',12)))))
+            if action=='observation':return self.screen_share.observation(max(1,min(60,int(args.get('max_age',12)))))
+            if action=='snapshot':return self.screen_share.snapshot()
+            raise ValueError('未知共享屏幕操作')
+        if name=='voice_session':
+            action=args.get('action')
+            voice=self.panel.voice
+            if action=='status':
+                from core.realtime_voice import load_settings
+                cfg=load_settings()
+                return dict(active=bool(self.panel.voice_active and voice and voice.active),
+                    connected=bool(voice and voice.connected),
+                    reconnecting=bool(voice and voice.active and not voice.connected),
+                    starting=bool(self.panel.voice_active and voice and not voice.active),
+                    last_error=(voice.last_error if voice else ''),provider=cfg.get('provider'),
+                    model=cfg.get('model'),free_only=bool(cfg.get('free_only',True)),
+                    quota_confirmation_matches=(cfg.get('free_quota_confirmed_provider')==cfg.get('provider') and
+                        cfg.get('free_quota_confirmed_model')==cfg.get('model')),
+                    usage=dict(rounds=voice._usage_rounds,reported_total_tokens=voice._usage_total,
+                        unreported_rounds=voice._usage_missing) if voice else None)
+            if action=='start':
+                if self.panel.voice_active or self.panel.busy or self.panel.short_voice.active:
+                    raise RuntimeError('当前已有通话、任务或录音；未启动新语音会话')
+                if self.pet._realtime_active() or getattr(self.pet,'_recording',False):
+                    raise RuntimeError('另一种语音模式仍在使用麦克风；未启动新会话')
+                from core.realtime_voice import load_settings,connection_url
+                cfg=load_settings();connection_url(cfg)
+                if cfg.get('free_only',True) and (cfg.get('free_quota_confirmed_provider')!=cfg.get('provider') or
+                        cfg.get('free_quota_confirmed_model')!=cfg.get('model')):
+                    raise RuntimeError('当前免费额度保护未匹配所选模型；已阻止语音联网')
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(0,lambda:self.pet._open_agent_voice())
+                return dict(accepted=True,started=False,message='已请求咕嘎打开实时通话；请查询status确认麦克风与连接状态')
+            if action=='stop':
+                if not self.panel.voice_active:
+                    return dict(stopped=False,active=False,message='当前没有活动的实时通话')
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(0,lambda:self.pet._end_agent_voice())
+                return dict(stopped=True,active=True,message='已请求结束实时通话；请查询status确认会话已断开')
+            raise ValueError('未知实时语音操作')
         if name=='battleground' and args.get('action') in ('shadow','shadow_stop'):
             if args.get('action')=='shadow_stop':return self.shadow.stop()
             return self.shadow.start(args.get('seconds',900),bool(args.get('train',True)))
@@ -135,13 +189,41 @@ class AppRuntime:
                         current_conversation_id=self.panel.active_id,
                         voice_active=self.panel.voice_active,
                         voice_path=dict(owner_only=bool(self.panel.voice._cfg.get('owner_only',False)) if self.panel.voice else False,
-                            speaker_gate_active=bool(self.panel.voice and self.panel.voice._speaker_gate)),
+                            speaker_gate_active=bool(self.panel.voice and self.panel.voice._speaker_gate),
+                            interaction=self.panel.voice.interaction_status() if self.panel.voice else None),
                         workspace=self.store.snapshot(),
                         authorized_apps=list(self.apps.entries()),
                         battleground=self.battleground.status(),
                         dsh=self.dsh.status(),
+                        screen_share=dict(self.screen_share.status(),
+                            call_expected=bool(self.panel.voice_active and not self.panel._screen_share_manual_stop),
+                            watchdog_active=self.panel._screen_share_watchdog_timer.isActive(),
+                            start_error=getattr(self.panel,'_screen_share_start_error',''),
+                            voice_bridge=self.panel.voice.screen_bridge_status() if self.panel.voice else dict(attached=False),
+                            recovery_failures=getattr(self.panel,'_screen_share_recovery_failures',0)),
+                        performance=dict(avatar_idle_fps=round(1000/self.pet._anim2d._idle_interval_ms,1),
+                            avatar_active_fps=round(1000/self.pet._anim2d._active_interval_ms,1),
+                            avatar_interval_ms=self.pet._anim2d._timer.interval(),gaze_interval_ms=self.pet._gaze_timer.interval(),
+                            background_interval_ms=self.pet._bg_timer.interval(),battleground_interval_ms=self.pet._watch_timer.interval(),
+                            hidden_animation_paused=not self.pet.isVisible()),
                         media_workflow=self.media.status(),
                         personal_harness=dict(backend='auto:local-first',tickets=self.dsh.archive.recent(self.panel.active_agent_id,limit=5)),
+                        assistant_contract=dict(version=HARNESS_VERSION,routing='local_first_dsh_for_complex_engineering',
+                            conversation=dict(mode='awake' if self.panel.voice_active else 'companion',
+                                companion_interval_seconds=self.panel.proactive.interval_seconds,
+                                news_refresh_seconds=self.panel.proactive.news_refresh_seconds,
+                                task_progress_seconds=30,foreground_qa_independent=True,
+                                hold_to_talk_in_speech_bubble=True,speech_bubble_count=1,
+                                qa_search='public_snippets_with_sources',profile_memory='explicit_user_facts'),
+                            voice_control='local_mcp_start_status_stop_free_guard_v1',
+                            fast_action_running=bool(getattr(self.panel,'_fast_inflight',False) or getattr(self.panel,'_fast_launch_count',0)),
+                            failure_explanations='host_receipts_even_when_model_unavailable',
+                            close_page='one_selected_tab_then_verify',
+                            screen_share=dict(capture_fps=self.screen_share.fps,range=[2,5],max_visual_calls_per_minute=self.screen_share.max_calls_per_minute,
+                                storage='memory_only',visible_preview=False,start_policy='long_voice_call',
+                                visual_bridge='change_sampling_primary_chat_fallback',audio_model_direct_video=False),
+                            isolation=dict(desktop='host',tab_worker='separate_process_7s',
+                                           security_sandbox=False)),
                         music=self.music.status(),
                         stage=dict(sunglasses=self.pet._anim.sunglasses,dancing=self.pet._anim.dancing,
                                    pet_scale=getattr(self.pet,'_pet_scale',1.),
@@ -169,7 +251,7 @@ class AppRuntime:
                         active_agent=dict(id=self.panel.active_agent_id,profile=self.panel.active_profile),
                         local_access=self.apps.access.status(),
                         task=self.panel.agent.task_status(),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','dsh_task','local_computer','computer','task_plan','media_workflow','workflow_catalog','wechat_send_self','wechat','browser','web_search','music_performance'],
+                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','dsh_task','local_computer','computer','screen_share','task_plan','media_workflow','workflow_catalog','wechat_send_self','wechat','browser','web_search','music_performance'],
                         scope='本机能力由完整访问开关控制；继承咕嘎进程实际Windows权限')
         if name == 'pet_control':
             return self._pet(args)

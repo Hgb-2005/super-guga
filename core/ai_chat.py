@@ -221,6 +221,8 @@ class AIChatEngine(QObject):
 
     def _start(self, user_msg, rag_context, system_override):
         prompt = system_override or SYSTEM_PROMPT
+        from core.companion_dialogue import current_time_instructions
+        prompt += current_time_instructions()
         history = self._history[-self._cfg.get('max_history', 8) * 2:]
         self._last_user_msg = user_msg
         self._worker = AIChatWorker(self._cfg, prompt, history, user_msg, rag_context,

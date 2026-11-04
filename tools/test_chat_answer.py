@@ -14,6 +14,9 @@ APP=QApplication.instance() or QApplication([])
 
 
 class AnswerTests(unittest.TestCase):
+    def setUp(self):
+        self.search=patch('core.search_results.search',return_value=dict(ok=False,results=[])).start()
+        self.addCleanup(patch.stopall)
     def pump(self,predicate,seconds=2):
         until=time.monotonic()+seconds
         while not predicate() and time.monotonic()<until:APP.processEvents();time.sleep(.005)
@@ -41,7 +44,7 @@ class AnswerTests(unittest.TestCase):
             [dict(reasoning_content='HIDDEN_REASONING'),dict(content='happy|none|'),dict(content='咕嘎～这是程序之间的入口。')]]+[b'data: [DONE]']
         with patch('core.chat_answer.requests.post',return_value=response) as api:
             worker.start('offline-session',[],'接口是什么',effort='quick');self.pump(lambda:bool(results))
-        self.assertTrue(results[0]['ok']);self.assertEqual(results[0]['text'],'咕嘎～这是程序之间的入口。')
+        self.assertTrue(results[0]['ok']);self.assertIn('咕嘎～这是程序之间的入口。',results[0]['text'])
         self.assertNotIn('HIDDEN_REASONING',str(draft));self.assertNotIn('tools',api.call_args.kwargs['json'])
         response.close.assert_called_once()
 

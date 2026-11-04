@@ -15,19 +15,20 @@ class TaskBriefTests(unittest.TestCase):
         self.assertIn('尚未', answer)
         self.assertIn('DSH', answer)
 
-    def test_watchdog_reports_every_minute_even_when_receipts_stop(self):
+    def test_watchdog_reports_every_thirty_seconds_even_when_receipts_stop(self):
         now = [0]
         brief = DshTaskBrief('j2', '整理视频', clock=lambda: now[0])
-        self.assertIsNone(brief.watchdog(now=59))
-        first = brief.watchdog(now=60)
-        now[0] = 120
-        second = brief.watchdog(now=120)
-        self.assertIn('第 1 分钟', first)
-        self.assertIn('第 2 分钟', second)
+        self.assertIsNone(brief.watchdog(now=29))
+        first = brief.watchdog(now=30)
+        now[0] = 60
+        second = brief.watchdog(now=60)
+        self.assertIn('已经 30 秒', first)
+        self.assertIn('已经 60 秒', second)
         self.assertIn('没有收到', first)
         self.assertIn('没有收到', second)
         self.assertIn('原因还不能确认', second)
-        self.assertIsNone(brief.watchdog(now=121))
+        self.assertIn('接下来',second)
+        self.assertIsNone(brief.watchdog(now=61))
 
     def test_failure_reason_is_factual_and_bounded(self):
         brief = DshTaskBrief('j3', '打开会议', clock=lambda: 0)

@@ -195,6 +195,9 @@ class SpriteAnimator:
         self._timer = QTimer()
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
+        self._last_tick=time.monotonic()
+        self._active_interval_ms=33
+        self._idle_interval_ms=50
 
     @property
     def _src(self):
@@ -549,9 +552,10 @@ class SpriteAnimator:
                 self._peek_side = random.choice([-1, 1])
 
     def _tick(self):
-        self._tap_elapsed += 1/30
+        now=time.monotonic();dt=max(.001,min(.12,now-self._last_tick));self._last_tick=now
+        self._tap_elapsed += dt
         self.frame += 1
-        t = self._time = self.frame / 30.0
+        t = self._time = self._time + dt
         if self._temporary_expression is not None and (
                 t >= self._temporary_until or self.mouth_open > .05):
             self._restore_expression()
@@ -564,14 +568,14 @@ class SpriteAnimator:
         self.body_sway_x = math.sin(t * 0.7 + 0.4) * 1.1 + math.sin(t * 2.2 + 1.3) * 0.25
 
         # ---- 翅膀抖动 ----
-        self._wing_twitch_countdown -= 1 / 30
+        self._wing_twitch_countdown -= dt
         if self._wing_twitch_countdown <= 0 and not self._wing_twitch_active:
             self._wing_twitch_active = True
             self._wing_twitch_phase = 0.0
             self._wing_twitch_duration = random.uniform(0.25, 0.5)
             self._wing_twitch_countdown = random.uniform(5.0, 12.0)
         if self._wing_twitch_active:
-            self._wing_twitch_phase += 1 / 30
+            self._wing_twitch_phase += dt
             if self._wing_twitch_phase >= self._wing_twitch_duration:
                 self._wing_twitch_active = False
                 self.wing_twitch = 0.0
@@ -582,22 +586,22 @@ class SpriteAnimator:
         # ---- 表情过渡 ----
         if self._transition < 1.0:
             t_ease = 1 - (1 - self._transition) ** 3
-            self._transition = min(1.0, self._transition + self._transition_speed + t_ease * 0.02)
+            self._transition = min(1.0, self._transition + (self._transition_speed + t_ease * 0.02)*dt*30)
 
         # ---- 眨眼（normal/happy）----
         if self.expression in ("normal", "happy") and self._transition > 0.5:
-            self._blink_countdown -= 1 / 30
+            self._blink_countdown -= dt
             if self._blink_countdown <= 0 and not self._blink_closing:
                 self._blink_closing = True
             if self._blink_closing:
-                self.eye_open -= 0.20
+                self.eye_open -= 6.0*dt
                 if self.eye_open <= 0:
                     self.eye_open = 0
                     self._blink_closing = False
                     self._blink_countdown = -random.uniform(0.05, 0.15)
             else:
                 if self._blink_countdown < 0:
-                    self.eye_open = min(1.0, self.eye_open + random.uniform(0.12, 0.22))
+                    self.eye_open = min(1.0, self.eye_open + random.uniform(3.6, 6.6)*dt)
                     if self.eye_open >= 1.0:
                         self._blink_countdown = random.uniform(3.0, 8.0)
         else:
@@ -605,23 +609,24 @@ class SpriteAnimator:
 
         # ---- 身体挤压回弹 ----
         if self.body_squash < self.body_squash_target:
-            self.body_squash = min(self.body_squash_target, self.body_squash + 0.03)
+            self.body_squash = min(self.body_squash_target, self.body_squash + .9*dt)
         elif self.body_squash > self.body_squash_target:
-            self.body_squash = max(self.body_squash_target, self.body_squash - 0.025)
+            self.body_squash = max(self.body_squash_target, self.body_squash - .75*dt)
         if self.body_squash == self.body_squash_target and self.body_squash_target < 1.0:
             self.body_squash_target = 1.0
 
         # ---- 动作动画 ----
         self._tick_task_motion()
-        self._tick_action()
+        self._tick_action(dt)
         # A stale TTS lip-sync frame must not suppress idle videos forever.
         if not self._speaking and self.mouth_open>.05:
             self._stale_mouth_frames=getattr(self,'_stale_mouth_frames',0)+1
-            if self._stale_mouth_frames>=60:
-                self.mouth_open=0.;self._stale_mouth_frames=0
+            self._stale_mouth_seconds=getattr(self,'_stale_mouth_seconds',0.)+dt
+            if self._stale_mouth_frames>=60 or self._stale_mouth_seconds>=2.0:
+                self.mouth_open=0.;self._stale_mouth_frames=0;self._stale_mouth_seconds=0.
                 if self._clip=='talk':self.stop_clip()
-        else:self._stale_mouth_frames=0
-        presence = self._presence.advance(1/30)
+        else:self._stale_mouth_frames=0;self._stale_mouth_seconds=0.
+        presence = self._presence.advance(dt)
         self.head_yaw += presence.head_yaw / 36
         self.head_nod += presence.head_pitch / 24
         self.anim_rotate += presence.roll
@@ -632,7 +637,7 @@ class SpriteAnimator:
             c = self.clips[self._clip]
             if c.get('one_shot_only') and self._clip_started_at is not None:
                 self._clip_frame = max(0.,time.monotonic()-self._clip_started_at)*c['fps']
-            else:self._clip_frame += 1 / 30 * c['fps']
+            else:self._clip_frame += dt * c['fps']
             n = len(c['frames'])
             if self._clip_frame >= n:
                 if c['loop']:
@@ -659,14 +664,14 @@ class SpriteAnimator:
         # ---- 常态表情来回切换（空闲时偶尔换脸再换回来）----
         if (not self._task_motion.active and self.action == "none" and self.mouth_open <= 0.05 and
                 self._clip in (None,'idle') and self._context_expression in (None, 'happy')):
-            self._idle_expr_countdown -= 1 / 30
+            self._idle_expr_countdown -= dt
             if self._idle_expr_countdown <= 0:
                 self._idle_expr_countdown = random.uniform(6.0, 14.0)
                 self.temporary_expression(random.choice(['playful', 'surprised', 'happy']),
                                           random.uniform(1.0, 2.2))
 
         # ---- 随机小动作（让企鹅活起来）----
-        if (not self._task_motion.active and random.random() < 0.0008 and self.expression == "normal" and
+        if (not self._task_motion.active and random.random() < 0.024*dt and self.expression == "normal" and
                 self.action == "none" and self._clip in (None,'idle')):
             self.set_expression('sleepy')
 
@@ -674,7 +679,7 @@ class SpriteAnimator:
         if (not self._task_motion.active and self.expression != 'sleepy' and
                 self._context_expression in (None,'happy') and self._temporary_expression is None and
                 self.action == "none" and self.mouth_open <= 0.05 and self._clip in (None, 'idle')):
-            self._idle_action_countdown -= 1 / 30
+            self._idle_action_countdown -= dt
             if self._idle_action_countdown <= 0:
                 self._idle_action_countdown = random.uniform(12.0, 24.0)
                 r = random.random()
@@ -692,12 +697,17 @@ class SpriteAnimator:
                     # instead of leaving an unattended pet dancing forever.
                     self.play_clip(self.DANCE_CLIP, loop=False)
 
+        energetic=bool(self._speaking or self.mouth_open>.05 or self.action!='none' or self.dancing or
+            self._task_motion.active or self._temporary_expression is not None or self._being_dragged or
+            self._transition<1 or self._clip not in (None,'idle') or self._tap_elapsed<1.0)
+        target=self._active_interval_ms if energetic else self._idle_interval_ms
+        if self._timer.interval()!=target:self._timer.setInterval(target)
         if self.on_update:
             self.on_update()
 
-    def _tick_action(self):
-        self._action_timer += 1 / 30
-        self._action_phase += 1 / 30
+    def _tick_action(self,dt=1/30):
+        self._action_timer += dt
+        self._action_phase += dt
         a = self.action
         self.anim_rotate = 0.0
         self.anim_offset = QPointF(0, 0)
@@ -738,7 +748,7 @@ class SpriteAnimator:
         if a in ('think_chin','scratch_head'):
             blocked=(self._speaking or self._being_dragged or self.expression=='sleepy' or self.dancing)
             target=0. if self._hand_releasing or blocked or self._action_timer>2.6 else 1.
-            self._hand_blend+=(target-self._hand_blend)*(1-math.exp(-9/30))
+            self._hand_blend+=(target-self._hand_blend)*(1-math.exp(-9*dt))
             self.head_tilt=.14*self._hand_blend
             if target==0 and self._hand_blend<.008:
                 self.action='none';self._hand_blend=0.

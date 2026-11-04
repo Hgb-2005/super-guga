@@ -47,6 +47,10 @@ Thumbs.db
 
 # Atomic local credential writes
 ai_config.json.tmp
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
 
 # Local gameplay audit (no credentials)
 runtime/

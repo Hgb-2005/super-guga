@@ -12,14 +12,14 @@ APP=QApplication.instance() or QApplication([])
 
 
 class ProgressTests(unittest.TestCase):
-    def test_one_minute_evidence_digest_keeps_reporting_real_stalls(self):
+    def test_thirty_second_digest_keeps_reporting_real_stalls(self):
         report=EvidenceProgress(now=0)
         self.assertIsNone(report.notice(12))
-        self.assertIsNone(report.notice(59))
-        self.assertIn('没有收到',report.notice(60))
-        self.assertIn('没有新的',report.notice(120))
-        self.assertIn('没有新的',report.notice(180))
-        self.assertIsNone(report.notice(181))
+        self.assertIsNone(report.notice(29))
+        self.assertIn('没有可核验',report.notice(30))
+        self.assertIn('没有新的',report.notice(60))
+        self.assertIn('没有新的',report.notice(90))
+        self.assertIsNone(report.notice(91))
 
     def test_digest_only_uses_receipts_and_never_raw_tool_content(self):
         report=EvidenceProgress(now=0)
@@ -27,7 +27,7 @@ class ProgressTests(unittest.TestCase):
         report.tool_result('local_computer',{'action':'run'},dict(ok=False,error='PRIVATE'))
         text=report.notice(180)
         self.assertIn('工具回执成功',text);self.assertIn('未完成',text)
-        self.assertIn('整个任务尚未确认完成',text)
+        self.assertIn('任务还在继续',text)
         self.assertNotIn('PRIVATE',text);self.assertNotIn('HIDDEN',text)
 
     def test_pending_voice_task_does_not_block_progress_or_become_completed(self):

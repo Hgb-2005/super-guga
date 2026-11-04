@@ -5,12 +5,25 @@ VERIFY_ACTIONS={"observe","accessibility"}
 ACTION_WORDS=("打开","启动","关闭","读取","修改","写入","保存","运行","安装","下载",
               "删除","移动","复制","重命名","上传","提交","点击","输入","执行","修复",
               "测试","检查窗口","截屏","看屏幕","整理文件","创建文件","发送","发一段","发一句")
-QUESTION_WORDS=("如何","怎么","为什么","解释一下","有什么区别","是什么","教我","步骤是")
+# Questions about how/why something works are not action requests even when they
+# mention an action word ("下载速度慢是什么原因"). A real request keeps an
+# explicit imperative marker, so "能不能帮我打开浏览器" still executes.
+QUESTION_WORDS=("如何","怎么","为什么","解释一下","有什么区别","是什么","什么是","教我","步骤是",
+                "什么","哪些","哪个","多少","多久","哪里","谁","何时","怎样","怎么样","是否",
+                "是不是","有没有","吗","呢","？","?")
+REQUEST_WORDS=("帮我","给我","替我","麻烦","请你","我要你","现在开始","执行一下","跑一下",
+               "去把","去打开","去下载","去执行")
+
+
+def _question_like(text):
+    return any(word in text for word in QUESTION_WORDS)
 
 
 def requires_execution(prompt):
     text=str(prompt or "").lower()
-    return any(word in text for word in ACTION_WORDS) and not any(word in text for word in QUESTION_WORDS)
+    if not any(word in text for word in ACTION_WORDS):return False
+    if _question_like(text) and not any(word in text for word in REQUEST_WORDS):return False
+    return True
 
 
 class ExecutionLedger:
@@ -38,6 +51,19 @@ class ExecutionLedger:
             if ok and result.get('selection_required'):
                 self.pending.append(dict(category='application_window',hwnd=None,
                     description='发现多个软件窗口，尚未选择并观察目标窗口'))
+            return
+        if name=='browser' and action not in ('open','close_tab'):
+            page=value.get('page_id')
+            if action in ('click','press','upload','scroll') and value.get('action_sent') is not False:
+                self.pending.append(dict(category='browser_input',page_id=args.get('page_id'),
+                    description='浏览器输入已尝试；需要重新snapshot读取页面并核对目标结果'))
+            if action in ('snapshot','wait') and ok and value.get('snapshot_id'):
+                self.pending=[p for p in self.pending if not (p.get('category')=='browser_input' and p.get('page_id')==page)]
+                self.failures.pop('browser_session',None)
+            elif not ok:self.failures['browser_session']='专用浏览器步骤未获得成功回执；先观察核对已有结果'
+            elif action in ('fill_form','download') and value.get('verified'):
+                self.completed.append(dict(category='browser_verified',action=action))
+                self.failures.pop('browser_session',None)
             return
         if name in ("wechat_send_self","wechat","web_search","browser"):
             if name=='wechat' and action=='open' and self.expects_send and ok:

@@ -20,7 +20,8 @@ APP_ALIASES={
     '设置':'ms-settings:','终端':'wt.exe','命令提示符':'cmd.exe','任务管理器':'taskmgr.exe',
 }
 BROWSER_NAMES=('浏览器','默认浏览器','网页浏览器')
-STOP_PHRASES=('停止对话','结束对话','停止通话','结束通话','停止语音','结束语音','别说了','不用聊了')
+STOP_PHRASES=('停止对话','结束对话','停止通话','结束通话','停止语音','结束语音','别说了','不用聊了',
+    '闭嘴','闭嘴吧','安静','安静点','别说话','别出声','不要说话','不用说了')
 
 
 def normalize(text):
@@ -30,9 +31,10 @@ def normalize(text):
 
 def command_text(text):
     value=normalize(text)
+    value=re.sub(r'^(?:(?:不[，,\s]*){1,4}[，,\s]*|不是[，,\s]*)?(?:我的意思是|我是说|我说的是)(?:让你|要你)?[，,\s]*','',value)
     value=re.sub(r'(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])','',value)
     value=re.sub(r'^(?:小?咕嘎)[，,\s]*','',value)
-    value=re.sub(r'^(?:(?:请你?|麻烦你?|能不能|可以请你|可以|帮我|给我|替我)[，,\s]*)+','',value)
+    value=re.sub(r'^(?:(?:你能不能|你能|你可以|请你?|麻烦你?|能不能|可以请你|可以|帮我|给我|替我)[，,\s]*)+','',value)
     return value
 
 
@@ -113,7 +115,8 @@ def match(text):
         if query:return dict(prefix,matched=True,action='web_search',silent=True,priority='fast',kind='url',target='https://www.baidu.com/s?wd='+urllib.parse.quote(query),report_query=query if any(w in value for w in ('汇报','告诉我结果')) else '')
     gestures={'戴墨镜':'sunglasses','戴上墨镜':'sunglasses','摘墨镜':'remove_sunglasses','摘下墨镜':'remove_sunglasses',
         '跳舞':'dance','摇摆':'dance','晃动身体':'dance','停止跳舞':'stop_dance','停止摇摆':'stop_dance','暗中观察':'sneak_peek',
-        '打盹':'idle_doze','困倦打盹':'idle_doze','比心':'idle_heart','双手比心':'idle_heart'}
+        '打盹':'idle_doze','困倦打盹':'idle_doze','比心':'idle_heart','双手比心':'idle_heart',
+        '比个心':'idle_heart','比一下心':'idle_heart','给你比心':'idle_heart','比心啦':'idle_heart'}
     if value in gestures:return dict(prefix,matched=True,action='performance',kind='gesture',target=gestures[value],silent=True)
     if value in ('停止唱歌','停歌','别唱了','停止音乐'):
         return dict(prefix,matched=True,action='performance',kind='music_stop',target='',silent=True)
@@ -123,22 +126,32 @@ def match(text):
     if value in STOP_PHRASES:
         return dict(prefix,matched=True,action='stop_call',silent=True,priority='critical',
                     message='结束实时语音通话')
+    share=re.fullmatch(r'(?:开始|打开)?(?:共享|分享)(?:一下)?(?:我的|整个|当前)?屏幕(?:[，,]?每秒([2-5两三四五])帧)?(?:吧|一下)?',value)
+    if share:
+        raw=share.group(1);fps={'两':2,'二':2,'三':3,'四':4,'五':5}[raw] if raw in ('两','二','三','四','五') else int(raw) if raw else 3
+        return dict(prefix,matched=True,action='screen_share_start',kind='screen_share',fps=fps,silent=False,priority='fast')
+    if re.fullmatch(r'(?:停止|关闭|结束)(?:一下)?(?:共享|分享)(?:屏幕)?(?:吧|一下)?',value):
+        return dict(prefix,matched=True,action='screen_share_stop',kind='screen_share',silent=False,priority='fast')
+    close_page=re.fullmatch(r'(?:(?:关闭|关掉|关上)(?:一下)?(?:这个|当前|现在|正在看|活动|前台)?(?:的)?(?:浏览器)?(?:页面|网页|标签页|标签)|(?:把)?(?:这个|当前|现在|活动|前台)?(?:的)?(?:浏览器)?(?:页面|网页|标签页|标签)(?:给)?(?:关掉|关闭|关上))(?:吧|一下|好吗|可以吗)?',value)
+    if close_page:
+        return dict(prefix,matched=True,action='close_page',kind='close_page',target='current_tab',silent=True,priority='fast')
     close=re.fullmatch(r'(?:把)?(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:关掉|关闭|退出)(?:吧|一下)?|(?:关闭|关掉|退出)(?:一下)?\s*(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:吧|一下)?',value,re.I)
     if close:
         return dict(prefix,matched=True,action='close_browser',kind='close_browser',target=(close.group(1) or close.group(2)).lower(),silent=True,priority='fast')
-    match=re.fullmatch(r'(?:在浏览器)?(?:打开|启动|访问|前往)(?:一下)?(?:网页|网站|页面)?\s*(.+)',value)
+    match=re.fullmatch(r'(?:(?:在|用)(?:默认)?浏览器)?(?:打开|启动|访问|前往)(?:一下)?(?:一个)?(?:网页|网站|页面)?\s*(.+)',value)
     if match:
         target=match.group(1).strip().strip('“”"\' ')
-        candidate=re.sub(r'(?:一下|好吗|可以吗|吧)$','',target).strip()
+        candidate=re.sub(r'(?:一下|好吗|可以吗|吗|吧)$','',target).strip()
         site_candidate=re.sub(r'(?:这个|那个|的)?(?:网站|官网|网页|主页)$','',candidate).strip()
         if site_candidate.casefold() in SITE_ALIASES:candidate=site_candidate.casefold()
         if candidate in SITE_ALIASES or candidate in APP_ALIASES or candidate in BROWSER_NAMES:target=candidate
+        elif re.fullmatch(r'(?:https?://)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?(?:/[^\s\u3400-\u9fff]*)?',candidate):target=candidate
         target=target.casefold() if target.casefold() in SITE_ALIASES else target
         if target in SITE_ALIASES:
             url=SITE_ALIASES[target]
-        elif re.fullmatch(r'[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/.*)?',target):
+        elif re.fullmatch(r'[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?(?:/[^\s\u3400-\u9fff]*)?',target):
             url='https://'+target
-        elif target.startswith(('http://','https://')):
+        elif re.fullmatch(r'https?://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s\u3400-\u9fff]*)?',target):
             url=target
         else:
             url=None
@@ -168,6 +181,8 @@ def match(text):
 
 def _close_browser(target):
     import win32gui, win32con
+    from core.desktop_access import DesktopAccess
+    if not DesktopAccess().enabled:return dict(ok=False,code='access_disabled',action_sent=False,error='完整访问未开启；尚未发送关闭操作')
     from core.window_inventory import list_windows
     from core.browser_launch import default_executable
     names={'edge':'msedge.exe','chrome':'chrome.exe','firefox':'firefox.exe','豆包浏览器':'doubao.exe'}
@@ -175,7 +190,7 @@ def _close_browser(target):
     wanted=names.get(target)
     if wanted:
         windows=[w for w in windows if w.get('process_name','').lower()==wanted]
-    if not windows:return dict(ok=False,error='没有检测到正在运行的目标浏览器')
+    if not windows:return dict(ok=False,code='target_missing',error='没有检测到正在运行的目标浏览器；尚未发送关闭操作')
     selected=next((w for w in windows if w.get('foreground')),None)
     if not selected and not wanted:
         default=default_executable()
@@ -188,8 +203,8 @@ def _close_browser(target):
     win32gui.PostMessage(hwnd,win32con.WM_CLOSE,0,0)
     for _ in range(15):
         time.sleep(.1)
-        if not win32gui.IsWindow(hwnd):return dict(ok=True,message='浏览器窗口已关闭')
-    return dict(ok=False,error='已请求关闭浏览器，但窗口仍存在，请检查是否有未保存内容或确认提示')
+        if not win32gui.IsWindow(hwnd):return dict(ok=True,verified=True,action_sent=True,evidence='target_window_gone',message='浏览器窗口已关闭')
+    return dict(ok=False,code='close_unverified',action_sent=True,error='已请求关闭浏览器，但窗口仍存在，请检查是否有未保存内容或确认提示；本次不会自动重复关闭')
 
 
 def execute(result):
@@ -208,6 +223,11 @@ def _execute(result):
     values=dict(result or {})
     if not values.get('matched'):return dict(ok=False,error='没有匹配的快速命令')
     if values.get('action')=='stop_call':return dict(ok=True,message='结束实时语音通话')
+    if values.get('action')=='close_page':
+        from core.browser_actions import bounded_close
+        return bounded_close()
+    if values.get('action') in ('screen_share_start','screen_share_stop'):
+        return dict(ok=False,code='host_ui_required',error='共享屏幕需要由咕嘎界面控制')
     if values.get('action')=='close_browser':return _close_browser(values['target'])
     if values.get('kind')=='url':
         return dict(ok=True,**_open_url(values['target']))

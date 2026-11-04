@@ -27,6 +27,21 @@ class LedgerTests(unittest.TestCase):
         self.assertFalse(requires_execution('请解释如何打开这个文件'))
         self.assertTrue(requires_execution('打开这个文件并保存'))
 
+    def test_knowledge_questions_mentioning_actions_stay_chat(self):
+        # The old heuristic sent any sentence containing 下载/删除/打开 to the
+        # desktop executor, which made plain questions feel like stuck tasks.
+        self.assertFalse(requires_execution('下载速度慢是什么原因'))
+        self.assertFalse(requires_execution('这个文件在哪里下载'))
+        self.assertFalse(requires_execution('怎么删除这个文件'))
+        self.assertFalse(requires_execution('这个文件删除会怎样'))
+        self.assertFalse(requires_execution('微信发送失败是什么问题'))
+
+    def test_explicit_request_still_executes(self):
+        self.assertTrue(requires_execution('帮我打开浏览器'))
+        self.assertTrue(requires_execution('能不能帮我打开浏览器'))
+        self.assertTrue(requires_execution('麻烦你下载这个文件'))
+        self.assertTrue(requires_execution('打开这个文件并保存'))
+
     def test_input_requires_later_observation(self):
         led=ExecutionLedger()
         led.record('computer',{'action':'type','hwnd':1},{'ok':True,'result':{'input_sent':True}})
@@ -67,7 +82,8 @@ class CompletionGateTests(unittest.TestCase):
              patch('core.desktop_access.DesktopAccess.execute',return_value=dict(exit_code=1,stopped=None)):
             agent._run('c',[],'执行命令',threading.Event())
         self.assertFalse(done[0]['ok'])
-        self.assertIn('没有通过完成校验',done[0]['error'])
+        self.assertIn('退出码 1',done[0]['error'])
+        self.assertIn('下一步',done[0]['error'])
 
     def test_completion_gate_can_resolve_with_new_receipt(self):
         class Bridge:

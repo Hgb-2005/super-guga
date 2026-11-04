@@ -29,7 +29,7 @@ class TaskSpeechQueue:
             self.pending.popleft()
         if not self.pending:return None
         item=self.pending[0]
-        if now-self.last<(10 if item['important'] else 60):return None
+        if now-self.last<(10 if item['important'] else 30):return None
         self.pending.popleft();self.last=now;return item
 
     def clear(self):self.pending.clear()

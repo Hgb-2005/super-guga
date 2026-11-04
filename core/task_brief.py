@@ -154,7 +154,7 @@ class DshTaskBrief:
             parts.append('任务尚未完成；我会继续盯着 DSH 的回执，重要变化会主动告诉你。')
         return ''.join(parts)[:1200]
 
-    def watchdog(self, now=None, interval=60):
+    def watchdog(self, now=None, interval=30):
         """Produce one honest update per interval, including genuine stalls."""
         now = self.clock() if now is None else float(now)
         if not self.active or self.report_state == 'needs_input':
@@ -164,11 +164,10 @@ class DshTaskBrief:
         self.last_checkin = now
         self.beat += 1
         elapsed = self.elapsed(now)
-        minute = max(1, elapsed // 60)
         goal = self.goal or '当前任务'
-        parts = [f'第 {minute} 分钟汇报。我在执行“{goal}”。']
+        parts = [f'本鹅报个进展：已经 {elapsed} 秒，“{goal}”还在处理。']
         if self.summary:
-            parts.append('已确认的进展：' + self.summary)
+            parts.append('执行器最新报告：' + self.summary)
         elif self.last_operation:
             parts.append('最近一次操作：' + self.last_operation + '。')
         else:
@@ -177,8 +176,14 @@ class DshTaskBrief:
             parts.append('卡点：' + '；'.join(self.blockers))
         elif self.last_receipt_at is None:
             parts.append('暂时看不出是否卡住，原因还不能确认。')
-        elif now - self.last_receipt_at >= 60:
+        elif now - self.last_receipt_at >= interval:
             parts.append(f'大约 {int(now-self.last_receipt_at)} 秒没有新的操作回执，原因还不能确认。')
+        else:
+            parts.append('目前没有新的明确错误回执。')
+        if self.blockers:
+            parts.append('我的判断是先核对失败步骤和已有结果，再根据新回执调整，避免重复已经做过的操作。')
+        else:
+            parts.append('接下来等执行结果并核验；这期间咱们可以继续聊。')
         if self.active:
             parts.append('任务尚未完成。')
         return ''.join(parts)[:800]

@@ -30,6 +30,7 @@ class TaskRouterTests(unittest.TestCase):
         names = {item['function']['name'] for item in TOOLS}
         self.assertIn('media_workflow', names)
         self.assertIn('wechat', names)
+        self.assertIn('screen_share', names)
 
 
 class WorkflowCatalogTests(unittest.TestCase):

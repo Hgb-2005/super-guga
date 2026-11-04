@@ -26,7 +26,6 @@ class MusicPerformance(QObject):
         self.interaction=QTimer(self);self.interaction.setSingleShot(True);self.interaction.timeout.connect(self.pause)
         self._last_stage=(False,'')
         self.stage_sync=QTimer(self);self.stage_sync.setInterval(250);self.stage_sync.timeout.connect(self._sync_stage)
-        self.stage_sync.start()
     def status(self):
         return dict(playing=self.playing,paused=self.player.state()==QMediaPlayer.PausedState,preparing=self.preparing,title=self.title,repeat=self.repeat,position_ms=self.player.position(),duration_ms=self.player.duration())
     def sing(self,title):
@@ -45,9 +44,10 @@ class MusicPerformance(QObject):
         self.playlist.addMedia(QMediaContent(QUrl.fromLocalFile(str(path.resolve()))));self.playlist.setCurrentIndex(0)
         self.playlist.setPlaybackMode(QMediaPlaylist.CurrentItemInLoop if self.repeat else QMediaPlaylist.CurrentItemOnce)
         self.player.play()
+        self.stage_sync.start()
         return dict(ok=True,accepted=True,playing=False,title=title,repeat=self.repeat,message='已请求循环演唱，直到停止唱歌' if self.repeat else '已请求播放咕嘎翻唱；实际播放以音频播放器事件为准')
     def stop(self):
-        self.interaction.stop()
+        self.interaction.stop();self.stage_sync.stop()
         self.requested=False;self.repeat=False;self.generation+=1;self.player.stop();self.playlist.setPlaybackMode(QMediaPlaylist.CurrentItemOnce)
         self.preparing=False
         proc=self.proc
@@ -100,6 +100,8 @@ class MusicPerformance(QObject):
         if changed:
             self._last_stage=(active,self.title)
             self.performance_event.emit(dict(type='playing' if active else 'stopped',title=self.title))
+        if active:self.stage_sync.start()
+        else:self.stage_sync.stop()
         if active and not self.repeat:self.interaction.start(75000)
         else:self.interaction.stop()
     def _sync_stage(self):

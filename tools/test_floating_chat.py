@@ -51,7 +51,7 @@ class FloatingTests(unittest.TestCase):
     def image(self):
         p=QPixmap(480,180);p.fill(Qt.white);q=QPainter(p);q.setPen(QColor('#273b50'));q.setFont(QFont('Microsoft YaHei UI',24));q.drawText(25,95,'完成 3 / 5 项');q.end();return p
     def test_compact_shell_and_collapsed_records(self):
-        p=self.panel;self.assertTrue(p.sidebar.isHidden());self.assertLessEqual(p.width(),500)
+        p=self.panel;self.assertTrue(p.sidebar.isHidden());self.assertGreaterEqual(p.width(),520);self.assertLessEqual(p.width(),800)
         for role,text in [('user','帮我打开网站'),('tool','SECRET_TOOL_BODY'),('system','后台摘要'),('assistant','已打开你指定的网站。')]:p.store.append(p.active_id,role,text)
         p.render();self.assertIn('已打开',p.view.toPlainText());self.assertNotIn('SECRET_TOOL_BODY',p.view.toPlainText())
         p._toggle_logs(True);self.assertIn('SECRET_TOOL_BODY',p.view.toPlainText())
@@ -80,10 +80,12 @@ class FloatingTests(unittest.TestCase):
         image=image_uri(self.image());p.attach_screenshot(image)
         p.store.append(p.active_id,'user','这张截图是什么意思？')
         p.voice.task_requested.connect(p._voice_request)
-        with patch.object(p.answer,'start') as model,patch.object(p.voice,'resolve_task'):
+        with patch.object(p.answer,'start') as model,patch.object(p.voice,'resolve_task') as resolve:
             p.voice.task_requested.emit('screenshot-voice','这张截图是什么意思？')
             self.assertEqual(model.call_args.kwargs['image_url'],image)
-        self.assertIsNone(p._pending_image);p.voice_active=False;p.voice=None;p.busy=False;p._task_heartbeat_timer.stop()
+            resolve.assert_not_called()
+            self.assertEqual(p._voice_task,(p.voice,'screenshot-voice'))
+        self.assertIsNone(p._pending_image);p._voice_task=None;p.voice_active=False;p.voice=None;p.busy=False;p._task_heartbeat_timer.stop()
     def test_model_sees_image_without_persisting_image_in_handoff(self):
         from core.agent_task import TaskJournal
         agent=SelfAgent(MagicMock(),config=dict(api_key='offline'));agent.journal=TaskJournal(self.path/'journal')
@@ -236,9 +238,49 @@ class FloatingTests(unittest.TestCase):
         with patch.object(p.answer,'start') as answer:
             p._short_transcript('你好，咕嘎')
         self.assertTrue(answer.call_args.kwargs['read_aloud'])
-        with patch.object(self.pet,'_say_with_expression') as speak:
+        with patch.object(self.pet,'_say_with_expression') as legacy,patch.object(self.pet,'_show_agent_bubble') as show:
             p._completed(dict(kind='answer',conversation_id=p.active_id,ok=True,text='饲养员，本鹅在呢。',expression='happy',action='none',read_aloud=True))
-        speak.assert_called_once_with('饲养员，本鹅在呢。','happy','none')
+            legacy.assert_not_called()
+            show.assert_not_called()
+            self.assertEqual(p.active_agent_id,'001')
+            self.assertIsNotNone(p._pending_tts_display)
+            p._local_tts_playback_started('')
+            show.assert_called_once()
+            self.assertEqual(show.call_args.args[0],'饲养员，本鹅在呢。')
+
+    def test_desktop_bubble_hold_to_talk_is_wired_to_short_voice(self):
+        p=self.panel;p.busy=True;p._run_kind='dsh'
+        with patch.object(p,'start_bubble_short_voice',return_value=True) as start,patch.object(p,'finish_bubble_short_voice') as finish:
+            self.pet._agent_bubble.talk_started.emit();self.pet._agent_bubble.talk_stopped.emit(False)
+        start.assert_called_once();finish.assert_called_once_with(False)
+        p.busy=False;p._run_kind=None
+
+    def test_text_waits_for_local_audio_playback_and_progress_is_spoken(self):
+        p=self.panel;p.voice_active=False;p._pending_tts_display=None
+        self.pet._agent_bubble.hide()
+        with patch.object(self.pet._tts,'speak') as speak:
+            p._say_active_reply('同步显示的回答',speak=True,spoken_text='同步显示的回答')
+            speak.assert_called_once()
+            self.assertFalse(self.pet._agent_bubble.isVisible())
+            self.pet._tts.playback_started.emit('')
+            APP.processEvents()
+            self.assertIn('同步显示的回答',self.pet._agent_bubble.full_text)
+        from core.task_speech import TaskSpeechQueue
+        p._task_speech=TaskSpeechQueue(clock=lambda:100)
+        with patch.object(self.pet._tts,'speak') as speak:
+            p._flush_task_speech();p._queue_task_speech('progress-test','本鹅正在核对文件，任务还没完成。')
+            speak.assert_called_once();self.assertNotIn('正在核对',self.pet._agent_bubble.full_text)
+            self.pet._tts.playback_started.emit('');APP.processEvents()
+            self.assertIn('正在核对',self.pet._agent_bubble.full_text)
+
+    def test_realtime_vad_fallback_injects_local_transcript(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=AgentRealtimeVoice();voice._thread=MagicMock();voice._thread.is_alive.return_value=True;voice._stop.clear()
+        self.assertTrue(voice.submit_user_text('本地识别补充'))
+        with patch.object(voice,'_send') as send,patch.object(voice,'_request_audio_response') as request:
+            voice._process_command(voice._commands.get_nowait())
+        create=next(c.args[0] for c in send.call_args_list if c.args[0].get('type')=='conversation.item.create')
+        self.assertEqual(create['item']['content'][0]['text'],'本地识别补充');request.assert_called_once()
     def test_selection_from_cancelled_capture_is_not_redisplayed(self):
         tools=self.pet._screen_tools;tools.selection_bar.dismiss();old=tools.selection_capture_sequence
         tools.selection_capture_sequence+=1

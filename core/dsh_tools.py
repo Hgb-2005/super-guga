@@ -75,8 +75,14 @@ class DshTools:
                     raise RuntimeError('相同输入重复四次，停止此路径并检查实际效果')
             value=dict(ok=True,result=agent.computer.execute(args,cancel))
         elif name=='browser':
-            from core.browser_agent import open_page
-            value=agent._desktop_capability(lambda:open_page(agent.computer,args['url'],cancel),cancel)
+            from core.browser_agent import execute as browser_execute
+            previous=getattr(self,'closed_tab_receipt',None)
+            if args.get('action')=='close_tab' and previous is not None:
+                value=dict(previous,duplicate_suppressed=True)
+            else:
+                value=agent._desktop_capability(lambda:browser_execute(agent.computer,args,cancel),cancel)
+                if args.get('action')=='close_tab' and value.get('action_sent') is not False:
+                    self.closed_tab_receipt=dict(value)
         elif name=='wechat':
             signature=json.dumps([args.get('recipient'),args.get('text')],ensure_ascii=False)
             if args.get('action')=='send' and signature in self.sent:

@@ -21,11 +21,17 @@ def tool_feedback(name,args,result=None):
     action=args.get('action','')
     subject=Path(args.get('path','')).name
     labels={('computer','windows'):'正在确认已打开的软件窗口',('computer','editor_context'):'正在定位编辑器的实际工作目录',
+        ('browser','session_start'):'正在打开咕嘎专用浏览器',('browser','snapshot'):'正在读取网页表单和控件',
+        ('browser','fill_form'):'正在填写表单并逐项回读',('browser','click'):'正在操作网页控件，随后核对结果',
+        ('browser','upload'):'正在向指定网页选择文件',('browser','download'):'正在下载并核对本地文件',
         ('computer','focus'):'正在切换到目标窗口',('computer','observe'):'正在查看目标窗口和当前内容',
         ('computer','type'):'正在向编辑器输入代码',('computer','hotkey'):'正在操作编辑器快捷键',
         ('computer','click'):'正在定位编辑区域',('computer','accessibility'):'正在读取窗口控件',
         ('computer','uia'):'正在通过结构化控件执行操作',
         ('computer','editor_select_tail'):'正在选中待修改的函数，保留此前代码',
+        ('screen_share','assist'):'正在读取当前共享画面和前台窗口上下文',
+        ('screen_share','context'):'正在读取当前共享画面上下文',
+        ('screen_share','snapshot'):'正在读取共享屏幕的最新画面',
         ('local_computer','read'):'正在读取'+(subject or '目标文件'),('local_computer','write'):'正在备份并写入'+(subject or '目标文件'),
         ('local_computer','run'):'正在执行命令并等待验证结果',('applications','open'):'正在打开目标软件'}
     summary=labels.get((name,action),'正在执行下一步操作')
@@ -42,7 +48,7 @@ def tool_feedback(name,args,result=None):
 
 class EvidenceProgress:
     """User-facing digest of tool receipts, never of a model's private reasoning."""
-    def __init__(self, interval=60, now=None):
+    def __init__(self, interval=30, now=None):
         self.interval=interval
         self.last_notice=time.monotonic() if now is None else now
         self.receipts=deque(maxlen=8)
@@ -70,8 +76,10 @@ class EvidenceProgress:
         self.beat+=1
         if self.reported==self.count:
             self.stale_reported=True
-            return '这一分钟没有新的操作回执，'+self.pending+'。原因还不能确认，任务尚未完成。'
+            return '这'+str(self.interval)+'秒没有新的操作回执，'+self.pending+'。还不能确定原因；下一步先等回执核对结果，任务仍在继续。'
         self.reported=self.count
         if not self.receipts:
-            return '目前还没有收到可核验的操作结果，'+self.pending+'。任务尚未确认完成。'
-        return '进展：'+'；'.join(list(self.receipts)[-2:])+'。'+self.pending+'，整个任务尚未确认完成。'
+            return '本鹅还在盯着：'+self.pending+'。目前没有可核验的结果或明确错误，下一步拿到回执后再判断，任务还没完成。'
+        failed=any('未完成' in x for x in list(self.receipts)[-2:])
+        analysis='有一步未通过，下一步先核对失败位置和已有结果，再决定如何调整。' if failed else '暂未收到明确错误，下一步继续核对后续回执。'
+        return '本鹅报个进展：'+'；'.join(list(self.receipts)[-2:])+'。'+analysis+'任务还在继续。'

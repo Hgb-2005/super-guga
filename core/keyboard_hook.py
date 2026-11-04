@@ -47,9 +47,9 @@ class KeyboardHook(QObject):
         self._queue = deque(maxlen=32)
         self._active = False
 
-        # 16ms 定时器消费队列
+        # 50ms 足够让快捷键响应保持即时，同时避免空闲时每秒唤醒60多次。
         self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        self._timer.setInterval(50)
         self._timer.timeout.connect(self._flush)
 
     # ---- 安装/卸载 ----

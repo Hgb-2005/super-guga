@@ -50,6 +50,8 @@ class TTSEngine(QObject):
 
     speak_finished = pyqtSignal()
     speak_started = pyqtSignal(str)
+    playback_started = pyqtSignal(str)
+    speech_failed = pyqtSignal(str)
 
     EDGE_VOICE = "zh-CN-XiaoyiNeural"   # 软萌少女音
     EDGE_RATE = "+15%"
@@ -83,6 +85,8 @@ class TTSEngine(QObject):
         self._session = None
         self._speak_token = 0   # 每次 speak 自增, 用于失效旧请求
         self._current_token = 0  # 当前正在播放的 token
+        self._display_text = ''
+        self._playback_announced = False
 
         try:
             cfg_path = os.path.join(os.path.dirname(__file__), '..', 'ai_config.json')
@@ -130,6 +134,8 @@ class TTSEngine(QObject):
         self._speak_token += 1
         token = self._speak_token
         self._is_speaking = True
+        self._display_text = text
+        self._playback_announced = False
         self.speak_started.emit(text)
         threading.Thread(
             target=self._synth_worker,
@@ -150,6 +156,8 @@ class TTSEngine(QObject):
             except Exception:
                 pass
         self._is_speaking = False
+        self._display_text = ''
+        self._playback_announced = False
         self._cleanup_temp()
 
     # ---- 后台线程: 合成 ----
@@ -303,6 +311,7 @@ class TTSEngine(QObject):
             print(f"[TTS] 播放错误: {e}", file=sys.stderr)
             self._safe_remove(path)
             self._is_speaking = False
+            self.speech_failed.emit('本机语音播放失败')
             try:
                 self.speak_finished.emit()
             except Exception:
@@ -312,14 +321,21 @@ class TTSEngine(QObject):
         if token != self._speak_token:
             return
         self._is_speaking = False
+        self.speech_failed.emit('本机语音合成失败')
         try:
             self.speak_finished.emit()
         except Exception:
             pass
 
     def _on_state_changed(self, state):
+        if state == QMediaPlayer.PlayingState and self._is_speaking and not self._playback_announced:
+            self._playback_announced = True
+            try:self.playback_started.emit(self._display_text)
+            except Exception:pass
         if state == QMediaPlayer.StoppedState and self._is_speaking:
             self._is_speaking = False
+            self._display_text = ''
+            self._playback_announced = False
             self._cleanup_temp()
             try:
                 self.speak_finished.emit()

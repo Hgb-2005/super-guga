@@ -2,6 +2,21 @@
 from urllib.parse import urlsplit
 import time
 
+
+def execute(computer,args,cancel):
+    if cancel.is_set():return dict(ok=False,error='任务已停止，未发送浏览器操作',action_sent=False)
+    from core.browser_session import ACTIONS,BrowserSession
+    if args.get('action') in ACTIONS:
+        if not computer.access.enabled:return dict(ok=False,error='完整访问未开启',action_sent=False)
+        session=getattr(computer,'browser_session',None)
+        if session is None:session=computer.browser_session=BrowserSession()
+        return session.execute(args,cancel)
+    if args.get('action')=='close_tab':
+        from core.browser_actions import bounded_close
+        return bounded_close()
+    if args.get('action')=='open':return open_page(computer,args['url'],cancel)
+    raise ValueError('未知浏览器操作')
+
 def validate_url(url):
     url=str(url).strip()
     parsed=urlsplit(url)

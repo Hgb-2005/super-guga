@@ -3,13 +3,13 @@
 The fast command parser handles deterministic one-shot commands before this
 module.  Here, ordinary desktop tasks stay in Guga's visual/UI-automation
 agent.  DSH is reserved for explicit code/project work or an explicit user
-override.  The optional local probability model may clarify an otherwise
-ambiguous route when it is actually running, but never overrides code safety.
+override. Routing itself does not depend on a model connection.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.request
 
@@ -27,9 +27,12 @@ _MODEL_OFFLINE_UNTIL = 0.0
 
 def _is_code_task(text):
     value = str(text or '').lower()
-    if any(marker in value for marker in CODE_MARKERS):
-        return True
-    return ('代码' in value or '项目' in value) and any(word in value for word in CODE_ACTIONS)
+    # Reading a repository page or editing a line is ordinary desktop work.
+    engineering=any(word in value for word in ('重构','调试','修复','开发','实现','编译','审查','测试','写'))
+    code=any(word in value for word in ('代码','源码','程序','python','react','vue','typescript','前端','后端'))
+    scope=any(word in value for word in ('项目','代码库','仓库','多文件','多个文件','多个源码','工程','完整程序'))
+    deep=any(word in value for word in ('重构','跨模块','集成测试','端到端','多文件','多个源码'))
+    return engineering and code and (scope or deep)
 
 
 def _local_model_vote(text):
@@ -76,16 +79,12 @@ def choose_task_route(prompt, image=False, backend='auto', workflow=None):
         return dict(executor='local_agent', category='manual', reason='用户固定为本地智能体')
     if backend == 'dsh':
         return dict(executor='dsh', category='manual', reason='用户固定为 DSH')
+    if re.search(r'(?:交给|使用|用|让|通过)\s*dsh(?![a-z0-9_])',str(prompt),re.I):
+        return dict(executor='dsh',category='explicit',reason='用户明确要求使用 DSH')
     if workflow:
         return dict(executor='local_agent', category='workflow', reason='命中已保存工作流',
                     workflow_id=workflow.get('id'))
     if _is_code_task(prompt):
         return dict(executor='dsh', category='code', reason='涉及代码、项目或多文件工程')
-    # Do not add latency to short, unambiguous desktop requests.  The local
-    # model is only advisory for long, unclear descriptions when it is running.
-    vote = _local_model_vote(prompt) if len(str(prompt or '')) > 120 else None
-    if vote == 'dsh_code' and any(word in str(prompt).lower() for word in (
-            '代码', '程序', '项目', '脚本', '工具', '文件', '目录', '开发', '实现', '测试')):
-        return dict(executor='dsh', category='model_code', reason='本地概率模型判定为代码工程任务')
     return dict(executor='local_agent', category='local_task',
                 reason='日常电脑操作由咕嘎直接执行，失败后再考虑升级')

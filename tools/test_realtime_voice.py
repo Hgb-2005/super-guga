@@ -210,8 +210,8 @@ class VoiceTests(unittest.TestCase):
     def test_context_is_bounded_and_not_persisted(self):
         settings = session_settings(CFG, [('饲养员', 'x'*2000)]*150)
         self.assertLess(len(settings['instructions']), 17000)
-        self.assertEqual(settings['turn_detection']['type'], 'smart_turn')
-        self.assertEqual(settings['max_history_turns'], 50)
+        self.assertEqual(settings['turn_detection']['type'], 'server_vad')
+        self.assertEqual(settings['max_history_turns'], 16)
 
     def test_server_vad_interrupt_does_not_send_duplicate_cancel(self):
         engine = RealtimeVoice()

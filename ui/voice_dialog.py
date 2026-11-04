@@ -101,6 +101,11 @@ class VoiceSettingsDialog(QDialog):
             combo.setCurrentIndex(max(0, combo.findData(cfg.get(key))))
             form.addRow('麦克风' if key == 'input_device' else '扬声器', combo)
         self.silence = QSpinBox()
+        self.turn_mode=QComboBox()
+        self.turn_mode.addItem('即时回应（停顿最多600毫秒）','server_vad')
+        self.turn_mode.addItem('长句交流（语义判断结束）','smart_turn_v2')
+        self.turn_mode.setCurrentIndex(max(0,self.turn_mode.findData(cfg.get('turn_mode','server_vad'))))
+        form.addRow('响应方式',self.turn_mode)
         self.silence.setRange(200, 6000)
         self.silence.setSuffix(' 毫秒')
         self.silence.setValue(cfg['silence_duration_ms'])
@@ -142,7 +147,7 @@ class VoiceSettingsDialog(QDialog):
         cfg = dict(DEFAULTS, provider=self.provider.currentData(), api_key=self.key.text().strip(), workspace_id=self.workspace.text().strip(),
                    region=self.region.currentData(), model=self.model.currentText(),
                    voice=self.voice.currentText().strip(), headphones=self.headphones.isChecked(),
-                   silence_duration_ms=self.silence.value(), max_call_minutes=self.duration.value(),
+                   silence_duration_ms=self.silence.value(),turn_mode=self.turn_mode.currentData(), max_call_minutes=self.duration.value(),
                    idle_minutes=self.idle.value(), input_device=self.input_device.currentData(),
                    output_device=self.output_device.currentData(), free_only=True,
                    owner_only=self.owner_only.isChecked(),
@@ -261,7 +266,7 @@ class ConversationView(QScrollArea):
         content.setWordWrap(True)
         content.setTextInteractionFlags(Qt.TextSelectableByMouse)
         content.setMinimumWidth(180)
-        content.setMaximumWidth(440)
+        content.setMaximumWidth(620)
         inner.addWidget(content)
         if who == '饲养员':
             outer.addStretch(1)

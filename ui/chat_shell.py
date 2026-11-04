@@ -10,7 +10,7 @@ def build(panel):
     p.setWindowTitle('咕嘎 · 对话')
     p.setWindowFlags(Qt.Window|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
     p.setAttribute(Qt.WA_TranslucentBackground)
-    p.resize(480,650);p.setMinimumSize(410,490)
+    p.resize(720,680);p.setMinimumSize(520,490)
     p.setFont(QFont('Microsoft YaHei UI',10));p.setObjectName('AgentWindow')
     p.setStyleSheet('''
         QWidget { color:#252933; font-family:"Microsoft YaHei UI"; }
@@ -93,8 +93,8 @@ def build(panel):
     p.capture_button=button('截图','截取当前屏幕并直接提问 · Ctrl+Alt+A',lambda:p._screen_tool('ask'));controls.addWidget(p.capture_button)
     p.explain_button=button('划词','开启或关闭屏幕选词工具条');p.explain_button.setCheckable(True)
     p.explain_button.setChecked(p.pet._screen_tools.selection_enabled);p.explain_button.toggled.connect(p.pet._screen_tools.set_selection_enabled);controls.addWidget(p.explain_button)
-    p.short_voice_button=button('说话','短语音：点一下录音，再点一次识别；使用原离线识别和 Edge TTS',p.toggle_short_voice);controls.addWidget(p.short_voice_button)
-    p.voice_button=button('通话','千问端到端实时通话');p.voice_button.setCheckable(True);p.voice_button.toggled.connect(p.toggle_voice);controls.addWidget(p.voice_button)
+    p.short_voice_button=button('说话','短语音：点一下录音，再点一次识别；桌面气泡也可按住说话、松开发送',p.toggle_short_voice);controls.addWidget(p.short_voice_button)
+    p.voice_button=button('唤醒','开启长对话，自动启用屏幕辅助');p.voice_button.setCheckable(True);p.voice_button.toggled.connect(p.toggle_voice);controls.addWidget(p.voice_button)
     p.log_button=button('执行记录','展开操作摘要和工具记录');p.log_button.setCheckable(True);p.log_button.toggled.connect(p._toggle_logs);controls.addWidget(p.log_button)
     controls.addStretch()
     p.stop_button=button('停止','停止当前任务',p.stop_turn);p.stop_button.setEnabled(False);controls.addWidget(p.stop_button)

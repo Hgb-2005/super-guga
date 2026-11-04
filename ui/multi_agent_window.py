@@ -113,7 +113,7 @@ class CompanionWindow(QWidget):
     def say(self,text,expression=None):
         if expression:self.anim.set_expression(expression)
         self.bubble.title.setText(self.profile['display_name']+' · '+self.profile['role'])
-        self.bubble.show_text(str(text)[:700],self.agent_id)
+        self.bubble.show_text(str(text)[:1600],self.agent_id)
 
     def mousePressEvent(self,event):
         if event.button()==Qt.LeftButton:

@@ -104,7 +104,8 @@ with tempfile.TemporaryDirectory() as folder,patch('core.keyboard_hook.KeyboardH
         assert not panel.agent.cancel_event.is_set()
         voice.task_requested.emit('progress-query','现在进度怎么样了')
         voice.task_requested.emit('steer-query','完成以后再核对一次结果')
-        assert panel.agent.steering.get_nowait()=='完成以后再核对一次结果'
+        queued=panel.agent.steering.get_nowait()
+        assert queued=='完成以后再核对一次结果',queued
         panel.busy=False
         voice._handle_event(dict(type='response.created',response=dict(id='r1')))
         voice._handle_event(dict(type='response.audio_transcript.delta',response_id='r1',delta='好呀，我在这里陪你。'))

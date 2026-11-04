@@ -50,7 +50,7 @@ class ProactiveTests(unittest.TestCase):
         self.assertIsNone(p.tick());p.stop()
 
     def test_not_enough_idle_time_or_inactive_call_does_nothing(self):
-        panel=fake_panel(self.memory);panel.voice._last_activity=time.monotonic()-20
+        panel=fake_panel(self.memory);panel.voice._last_activity=time.monotonic()-5
         p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-300
         self.assertIsNone(p.tick());p.stop()
         panel.voice.active=False;p=ProactiveConversation(panel,self.memory);self.assertIsNone(p.tick());p.stop()

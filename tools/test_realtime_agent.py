@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -24,6 +25,76 @@ class RealtimeAgentTests(unittest.TestCase):
         engine._cfg = dict(DEFAULTS)
         return engine
 
+    def test_live_screen_facts_and_reader_tool_reach_initial_session(self):
+        engine=self.engine();engine.screen_context_provider=lambda:dict(active=True,fresh=True,
+            context='蓝色圆形与屏幕验收',foreground=dict(hwnd=12,process='fixture.exe',title='验收页'),sequence=7)
+        settings=engine._session_settings()
+        self.assertIn('蓝色圆形',settings['instructions'])
+        self.assertIn('"active": true',settings['instructions'])
+        self.assertIn('read_screen',[tool['name'] for tool in settings['tools']])
+
+    def test_screen_updates_replace_instructions_without_creating_speech(self):
+        engine=self.engine();state=dict(active=True,fresh=True,context='验收页面',foreground=dict(hwnd=12),sequence=1)
+        engine.screen_context_provider=lambda:state;engine._ws=object()
+        engine._handle_event(dict(type='session.updated'))
+        with patch.object(engine,'_send') as send:
+            engine._sync_screen_context(force=True)
+            self.assertEqual(send.call_args.args[0]['type'],'session.update')
+            self.assertEqual(list(send.call_args.args[0]['session']),['instructions'])
+            engine._screen_checked_at=0;state['sequence']=2;engine._sync_screen_context()
+            self.assertEqual(send.call_count,1) # no new model request for every captured frame
+            state.update(fresh=False,context='当前画面已变化，待重新读取');engine._screen_checked_at=0
+            # R4 throttle: wait out the ≥2s window before expecting a new update.
+            engine._screen_last_sent_at=time.monotonic()-3
+            engine._sync_screen_context();self.assertEqual(send.call_count,2)
+            self.assertIn('待重新读取',send.call_args.args[0]['session']['instructions'])
+            self.assertFalse(any(c.args[0]['type']=='response.create' for c in send.call_args_list))
+        engine._handle_event(dict(type='session.updated'))
+        self.assertEqual(engine.screen_bridge_status()['updates_acked'],1)
+
+    def test_read_screen_dispatches_to_host_without_starting_task(self):
+        engine=self.engine();questions=[];tasks=[]
+        engine.screen_question_requested.connect(lambda call_id,question:questions.append((call_id,question)))
+        engine.task_requested.connect(lambda *args:tasks.append(args))
+        engine._handle_event(dict(type='response.function_call_arguments.done',response_id='r-screen',
+            call_id='screen-call',name='read_screen',arguments=json.dumps(dict(question='画面里是什么颜色？'))))
+        self.assertEqual(questions,[('screen-call','画面里是什么颜色？')]);self.assertFalse(tasks)
+
+    def test_manual_screen_stop_is_reflected_in_next_session_update(self):
+        engine=self.engine();engine._ws=object();engine._screen_configured=True
+        engine.screen_context_provider=lambda:dict(active=False,fresh=False,context='')
+        with patch.object(engine,'_send') as send:
+            engine._sync_screen_context(force=True)
+        self.assertIn('"active": false',send.call_args.args[0]['session']['instructions'])
+
+    def test_reconnect_clears_stuck_notice_state(self):
+        engine=self.engine()
+        engine._notice_active=True;engine._notice_responses.append('r1');engine._user_speaking=True
+        engine._invalidate_tasks()
+        self.assertFalse(engine._notice_active)
+        self.assertEqual(len(engine._notice_responses),0)
+        self.assertFalse(engine._user_speaking)
+
+    def test_stale_notice_does_not_reject_later_tool_call(self):
+        engine=self.engine()
+        engine._notice_active=True;engine._response_id=None
+        engine._accept_call(dict(name='read_web',call_id='c1',arguments='{}'))
+        queued=engine._commands.get_nowait()
+        self.assertEqual(queued[0],'task_result')
+        self.assertTrue(queued[2].get('ok'))
+
+    def test_fast_command_success_without_waiter_is_spoken_once(self):
+        engine=self.engine()
+        engine._fast_jobs['job1']=dict(waiters=[],result=None)
+        engine.complete_fast_command('job1',dict(ok=True,message='已请求浏览器打开新窗口'))
+        notices=[]
+        while True:
+            try:item=engine._commands.get_nowait()
+            except Exception:break
+            if item[0]=='bg_notice':notices.append(item)
+        self.assertEqual(len(notices),1)
+        self.assertIn('浏览器',notices[0][2])
+
     @staticmethod
     def call_event(call_id='c1', response_id='r1'):
         return dict(type='response.function_call_arguments.done', response_id=response_id,
@@ -35,7 +106,7 @@ class RealtimeAgentTests(unittest.TestCase):
         self.assertEqual(engine._cfg['model'], 'qwen-audio-3.1-realtime-plus')
         self.assertEqual(settings['voice'], DEFAULTS['voice'])
         self.assertEqual(settings['modalities'], ['text', 'audio'])
-        self.assertEqual(settings['turn_detection']['type'], 'smart_turn')
+        self.assertEqual(settings['turn_detection']['type'], 'server_vad')
         self.assertEqual(settings['tools'][0]['name'], 'ask_deepseek')
         self.assertEqual(settings['tool_choice'], 'auto')
 

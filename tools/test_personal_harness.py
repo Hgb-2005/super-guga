@@ -59,6 +59,7 @@ class IntegrationTests(unittest.TestCase):
         cls.temp=tempfile.TemporaryDirectory();cls.root=Path(cls.temp.name)
         cls.pipe='guga-self-test-'+uuid.uuid4().hex
         cls.patches=[patch.dict(os.environ,{'GUGA_MCP_PIPE':cls.pipe}),
+                     patch('ui.agent_chat.FAST_DIAGNOSTICS_PATH',cls.root/'fast-diagnostics.json'),
                      patch('core.keyboard_hook.KeyboardHook.start'),patch('ui.tts_engine.TTSEngine.speak')]
         for p in cls.patches:p.start()
         QSettings.setDefaultFormat(QSettings.IniFormat);QSettings.setPath(QSettings.IniFormat,QSettings.UserScope,cls.temp.name)
@@ -80,6 +81,24 @@ class IntegrationTests(unittest.TestCase):
         end=time.monotonic()+seconds
         while not predicate() and time.monotonic()<end:APP.processEvents();time.sleep(.01)
         self.assertTrue(predicate())
+    def test_typed_qa_while_dsh_is_busy_does_not_steer_or_clear_the_task(self):
+        p=self.panel;p.busy=True;p._run_kind='dsh';reports=p._dsh_reports
+        try:
+            with patch.object(p.dialogue,'start') as qa,patch.object(p,'_steer_execution') as steer,patch.object(p.runtime.dsh,'stop') as stop:
+                self.assertTrue(p.send('为什么月亮看起来是圆的？'))
+                qa.assert_called_once();steer.assert_not_called();stop.assert_not_called()
+                p._dialogue_completed(dict(generation=p.dialogue.generation,ok=True,text='月球本身近似球体。'))
+                self.assertTrue(p.busy);self.assertEqual(p._run_kind,'dsh');self.assertIs(p._dsh_reports,reports)
+                self.assertIn('月球本身',p.store.messages(p.active_id)[-1]['content'])
+        finally:p._dialogue_context=None;p.busy=False;p._run_kind=None
+
+    def test_task_correction_still_goes_to_the_executor_instead_of_chat(self):
+        p=self.panel;p.busy=True;p._run_kind='dsh'
+        try:
+            with patch.object(p.dialogue,'start') as qa,patch.object(p,'_steer_execution') as steer:
+                self.assertTrue(p.send('改成中文版本'))
+                qa.assert_not_called();steer.assert_called_once_with('改成中文版本')
+        finally:p.busy=False;p._run_kind=None
     def test_daily_task_uses_local_agent_while_fast_commands_stay_without_llm(self):
         p=self.panel
         with patch.object(p.runtime.dsh,'start',return_value={'accepted':True}) as dsh,patch.object(p.agent,'start') as old:
@@ -106,6 +125,189 @@ class IntegrationTests(unittest.TestCase):
                 self.assertIsNone(p._pending_execution)
         finally:
             p.busy=False;p.voice_active=False;p._pending_execution=None
+    def test_close_page_voice_bypasses_confirmation_and_dsh(self):
+        p=self.panel;voice=Mock();old=p.voice;p.voice=voice;p.voice_active=True;p.busy=False
+        p._pending_execution=dict(text='旧的复杂任务',created=time.monotonic())
+        try:
+            with patch.object(p,'sender',return_value=voice),patch.object(p.runtime.dsh,'start') as dsh,patch.object(p.agent,'start') as agent:
+                p._voice_request('close-page','不不不，我的意思是让你关闭页面。')
+                self.assertIsNone(p._pending_execution)
+                command=voice._dispatch_fast.call_args.args[0]
+                self.assertEqual(command['action'],'close_page');dsh.assert_not_called();agent.assert_not_called()
+        finally:p.voice=old;p.voice_active=False;p._pending_execution=None
+
+    def test_voice_session_local_control_checks_free_guard_and_status_without_connecting(self):
+        from unittest.mock import Mock
+        p=self.panel;runtime=p.runtime;old=p.voice;flag=p.voice_active;p.voice=Mock();p.voice.active=False
+        try:
+            with patch('core.realtime_voice.load_settings',return_value=dict(provider='qianwen',model='qwen-audio-3.1-realtime-plus',
+                 free_only=True,free_quota_confirmed_provider='other',free_quota_confirmed_model='qwen-audio-3.1-realtime-plus')), \
+                 patch('core.realtime_voice.connection_url',return_value='wss://unit.test'):
+                with self.assertRaisesRegex(RuntimeError,'免费额度保护未匹配'):runtime.execute('voice_session',{'action':'start'})
+            p.voice_active=False
+            p.voice._usage_rounds=3;p.voice._usage_total=37;p.voice._usage_missing=1
+            with patch('core.realtime_voice.load_settings',return_value=dict(provider='qianwen',model='qwen-audio-3.1-realtime-plus',
+                 free_only=True,free_quota_confirmed_provider='qianwen',free_quota_confirmed_model='qwen-audio-3.1-realtime-plus')):
+                status=runtime.execute('voice_session',{'action':'status'})
+            self.assertFalse(status['active']);self.assertTrue(status['quota_confirmation_matches'])
+            self.assertEqual(status['usage']['reported_total_tokens'],37)
+            self.assertFalse(p.voice.active)
+        finally:p.voice=old;p.voice_active=flag
+
+    def test_long_call_owns_screen_sharing_without_visible_preview(self):
+        p=self.panel
+        shared=dict(started=True,fps=3,active=True,context='当前是记事本，输入区有测试文字。',context_age_seconds=1,fresh=True)
+        try:
+            with patch.dict(os.environ,{'QT_QPA_PLATFORM':''}), \
+                 patch.object(p.runtime.screen_share,'status',side_effect=[dict(active=False),shared,shared,shared]), \
+                 patch.object(p.runtime.screen_share,'start',return_value=shared) as start, \
+                 patch.object(p.runtime.screen_share,'stop',return_value=dict(active=False)) as stop:
+                p._start_call_screen_share()
+                start.assert_called_once_with(reason='call');self.assertTrue(p._screen_share_call_owned)
+                self.assertFalse(hasattr(p.runtime,'screen_preview'))
+                p._stop_call_screen_share();stop.assert_called_once();self.assertFalse(p._screen_share_call_owned)
+        finally:
+            p._screen_share_call_owned=False
+
+    def test_screen_share_watchdog_recovers_once_but_respects_manual_stop(self):
+        p=self.panel;flag=p.voice_active
+        try:
+            p.voice_active=True;p._screen_share_call_owned=True;p._screen_share_manual_stop=False;p._screen_share_retry_at=0
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=False)), \
+                 patch.object(p.runtime.screen_share,'start',return_value=dict(started=True,active=True)) as start:
+                p._screen_share_watchdog();start.assert_called_once_with(reason='call_recovery')
+            p._screen_share_manual_stop=True;p._screen_share_retry_at=0
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=False)), \
+                 patch.object(p.runtime.screen_share,'start') as start:
+                p._screen_share_watchdog();start.assert_not_called()
+        finally:p.voice_active=flag;p._screen_share_call_owned=False;p._screen_share_manual_stop=False
+
+    def test_first_share_start_failure_is_diagnosed_and_recoverable(self):
+        p=self.panel;flag=p.voice_active;p.voice_active=True
+        try:
+            with patch.dict(os.environ,{'QT_QPA_PLATFORM':''}), \
+                 patch('ui.agent_chat.SCREEN_SHARE_DIAGNOSTICS_PATH',self.root/'share-lifecycle.json'), \
+                 patch.object(p.runtime.screen_share,'status',return_value=dict(active=False)), \
+                 patch.object(p.runtime.screen_share,'start',side_effect=[RuntimeError('temporary capture failure'),dict(active=True)]) as start:
+                p._start_call_screen_share()
+                self.assertTrue(p._screen_share_call_owned);self.assertTrue(p._screen_share_watchdog_timer.isActive())
+                self.assertIn('temporary capture',p._screen_share_start_error)
+                self.assertTrue((self.root/'share-lifecycle.json').is_file())
+                p._screen_share_watchdog();self.assertEqual(start.call_count,2)
+                self.assertEqual(p._screen_share_start_error,'')
+        finally:
+            p._screen_share_watchdog_timer.stop();p.voice_active=flag;p._screen_share_call_owned=False
+
+    def test_legacy_long_call_entry_uses_agent_and_screen_path(self):
+        with patch.object(self.pet,'_open_agent_voice') as start:
+            self.pet._open_realtime_voice();start.assert_called_once_with()
+
+    def test_long_call_wires_screen_provider_before_voice_connection(self):
+        from core.realtime_voice import DEFAULTS
+        p=self.panel;old=p.voice;flag=p.voice_active;p.voice=None;p.voice_active=False
+        shared=dict(active=True,fresh=True,context='真实测试控件',foreground=dict(hwnd=42),sequence=3)
+        try:
+            with patch('core.realtime_voice.load_settings',return_value=dict(DEFAULTS)), \
+                 patch('core.realtime_voice.connection_url',return_value='wss://unit.test'), \
+                 patch.object(p.pet,'_realtime_active',return_value=False), \
+                 patch.object(p,'_start_call_screen_share') as share, \
+                 patch.object(p.runtime.screen_share,'assist_context',return_value=shared), \
+                 patch('core.realtime_agent.AgentRealtimeVoice.start') as start:
+                p.toggle_voice(True)
+                share.assert_called_once();start.assert_called_once()
+                self.assertTrue(p.voice.screen_bridge_status()['attached'])
+                p.voice._cfg=dict(DEFAULTS)
+                self.assertIn('真实测试控件',p.voice._session_settings()['instructions'])
+        finally:
+            p.toggle_voice(False);p.voice=old;p.voice_active=flag
+
+    def test_read_screen_uses_actual_frame_path_without_starting_desktop_task(self):
+        p=self.panel;old=p.voice;flag=p.voice_active
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=p.voice=AgentRealtimeVoice();p.voice_active=True
+        voice._tasks['fixture-read']=None
+        try:
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=True)), \
+                 patch.object(p.runtime.screen_share,'snapshot',return_value=dict(ok=True,
+                     _image_url='data:image/jpeg;base64,AA==',frame_age_seconds=.1,sequence=8)), \
+                 patch('core.screen_visual.observe_frame',return_value=dict(ok=True,text='蓝色圆形和验收文字')) as answer, \
+                 patch.object(voice,'resolve_task') as resolve,patch.object(p.agent,'start') as task:
+                p._voice_screen_question('fixture-read','当前有什么颜色？')
+                self.pump(lambda:resolve.called)
+                self.assertIn('蓝色圆形',resolve.call_args.args[1]['observation'])
+                self.assertEqual(answer.call_args.args[0],'data:image/jpeg;base64,AA==')
+                task.assert_not_called()
+        finally:p.voice=old;p.voice_active=flag
+
+    def test_general_screen_question_uses_cached_facts_without_new_visual_request(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        p=self.panel;old=p.voice;flag=p.voice_active;p.voice=AgentRealtimeVoice();p.voice_active=True
+        try:
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=True)), \
+                 patch.object(p.runtime.screen_share,'assist_context',return_value=dict(active=True,fresh=True,context='蓝色圆形')), \
+                 patch('core.screen_visual.observe_frame') as perception, \
+                 patch.object(p.voice,'resolve_task') as resolve:
+                p._voice_screen_question('cached','能看到我的屏幕吗？')
+                perception.assert_not_called();self.assertEqual(resolve.call_args.args[1]['observation'],'蓝色圆形')
+                self.assertNotIn('answer',resolve.call_args.args[1])
+        finally:p.voice=old;p.voice_active=flag
+
+    def test_call_screen_context_is_injected_into_task_handoff(self):
+        p=self.panel;flag=p.voice_active;p.voice_active=True
+        assist=dict(active=True,fresh=True,context='当前是编辑器，目标文件已打开。',
+            foreground=dict(hwnd=42,title='编辑器',process='editor.exe'),sequence=8,
+            context_matches_foreground=True,frame_age_seconds=.1,context_age_seconds=1)
+        try:
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=True)), \
+                 patch.object(p.runtime.screen_share,'assist_context',return_value=assist), \
+                 patch.object(p.agent,'start') as agent:
+                self.assertTrue(p.send('看看当前编辑器里的目标',force_agent=True))
+            handoff=agent.call_args.kwargs['handoff']['_screen_context']
+            self.assertTrue(handoff['fresh']);self.assertEqual(handoff['foreground']['hwnd'],42)
+            self.assertIn('目标文件',handoff['context'])
+        finally:p.voice_active=flag;p.busy=False;p._run_kind=None
+
+    def test_close_worker_returns_receipt_without_blocking_qt(self):
+        p=self.panel;p._fast_inflight=False
+        from core.fast_commands import match
+        finished=threading.Event()
+        def execute(command):
+            finished.wait(.1)
+            return dict(ok=False,code='target_ambiguous',error='有多个浏览器，尚未发送操作，请先切到目标页面')
+        with patch('core.fast_commands.execute',side_effect=execute):
+            accepted=p._fast_command(match('关闭当前页面'))
+            self.assertTrue(accepted['execution_pending']);self.assertTrue(p._fast_inflight)
+            self.assertFalse(p.send('读取一个文件',force_agent=True))
+            finished.set();self.pump(lambda:not p._fast_inflight)
+        self.assertIn('有多个浏览器',p._last_fast_result['error'])
+        self.assertIn('有多个浏览器',p.store.messages(p.active_id)[-1]['content'])
+
+    def test_website_launch_does_not_block_voice_event_loop(self):
+        p=self.panel
+        from core.fast_commands import match
+        release=threading.Event();started=threading.Event();ticks=[]
+        def execute(command):
+            started.set();release.wait(2)
+            return dict(ok=True,launch_requested=True,message='已提交测试网址')
+        with patch('core.fast_commands.execute',side_effect=execute):
+            before=time.monotonic()
+            accepted=p._fast_command(match('你能帮我打开 GitHub 官网吗'))
+            self.assertLess(time.monotonic()-before,.1)
+            self.assertTrue(accepted['execution_pending'])
+            try:
+                self.assertTrue(started.wait(1))
+                QTimer.singleShot(0,lambda:ticks.append(True));APP.processEvents()
+                self.assertTrue(ticks)
+            finally:
+                release.set();self.pump(lambda:not getattr(p,'_fast_launch_count',0))
+        self.assertTrue(p._last_fast_result['launch_requested'])
+
+    def test_failure_can_be_explained_locally_with_model_unavailable(self):
+        p=self.panel;p._last_fast_failure=dict(error='未完成：读取标签失败；尚未发送操作。请切到目标页面',at=time.time()+1,conversation_id=p.active_id)
+        with patch.object(p.agent,'start') as agent,patch.object(p.runtime.dsh,'start') as dsh:
+            p.send('刚才为什么失败')
+            self.assertIn('尚未发送操作',p.store.messages(p.active_id)[-1]['content'])
+            agent.assert_not_called();dsh.assert_not_called()
     def test_local_personal_memory_survives_new_conversation(self):
         p=self.panel;p.send('记住：我喜欢简洁的项目报告')
         p.open_conversation(p.store.create_conversation());p.send('查看我的记忆')
@@ -149,7 +351,7 @@ class IntegrationTests(unittest.TestCase):
         from core.task_speech import TaskSpeechQueue
         p=self.panel;old=p.voice;p._task_speech=TaskSpeechQueue()
         from types import SimpleNamespace
-        notify=Mock();p.voice=SimpleNamespace(is_speaking=False,notify_battleground=notify);p.voice_active=True
+        notify=Mock();p.voice=SimpleNamespace(is_speaking=False,notify_battleground=notify,set_task_context=Mock());p.voice_active=True
         try:
             with patch.object(p.pet._tts,'speak') as edge:
                 p._dsh_event(dict(type='dsh_event',job_id='voice-proof',conversation_id=p.active_id,

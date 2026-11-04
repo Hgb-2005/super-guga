@@ -31,6 +31,44 @@ def _tokens(text):
     return parts
 
 
+def profile_facts(text,previous=''):
+    """Only explicit first-person facts or short answers to a profile question.
+
+    No LLM inference from screenshots, assistant claims, fiction or secrets.
+    Kinds are stable slots so a correction replaces the old profile fact.
+    """
+    text=str(text or '').strip()
+    if (not text or safe_text(text)!=text or len(text)>2000 or
+        re.search(r'[“”「」『』"<>]|https?://|\b(?:password|token|api.?key)\b|密码|密钥|令牌|身份证|手机号|邮箱',text,re.I)):
+        return []
+    out=[]
+    for clause in re.split(r'[，,。！!；;\n]',text):
+        clause=clause.strip()
+        if not clause or any(x in clause for x in ('如果','假如','假设','比如','例如','他说','她说','角色扮演','写故事',
+            '什么','怎么','如何','是否','是不是','能不能','还是','吗','？','?')):continue
+        occupation=re.fullmatch(r'(?:我(?:现在|目前)?(?:的职业是|的工作是|从事|是一?名?|是一?个)|职业[：:])\s*(.{2,30})',clause)
+        if occupation:
+            value=occupation.group(1).strip()
+            if (not value.startswith(('说','想','觉得','不是','不确定','希望','让')) and
+                (any(x in clause for x in ('职业','工作','从事')) or re.search(r'工程师|程序员|设计师|教师|老师|医生|护士|学生|研究生|博士生|会计|律师|产品经理|自由职业者|开发者|运营|销售|创业者',value))):
+                out.append(('profile:occupation','用户职业背景：'+value))
+        preference=re.fullmatch(r'我(?:现在|目前|平时|比较|更|最)?(不喜欢|不爱|喜欢|爱好是|兴趣是|偏好)\s*(.{1,60})',clause)
+        if preference:
+            verb,value=preference.groups();value=value.strip()
+            if re.search(r'记住|密码|密钥|令牌|\d{7,}',value) or value.startswith(('这个','那个','刚才','这样','这么','你这')):continue
+            key=re.sub(r'^(?:喝|吃|玩|听|看|用|做)','',value).casefold()
+            out.append(('profile:preference:'+key,'用户'+('不喜欢' if verb in ('不喜欢','不爱') else '喜欢')+'：'+value))
+    # A proactive question often receives a terse answer without “我”.
+    if not out and previous and 1<len(text)<=35 and not re.search(r'[？?！!。；;\n]|\d{7,}',text):
+        if re.search(r'(?:做什么工作|职业是什么|从事什么|什么职业)',previous):
+            if re.search(r'工程师|程序员|设计师|教师|老师|医生|护士|学生|研究生|会计|律师|经理|自由职业',text):
+                out.append(('profile:occupation','用户职业背景：'+text))
+        elif re.search(r'(?:喜欢|爱好|兴趣).{0,16}[？?]',previous):
+            if text not in ('不知道','不清楚','随便','都行','没有','不想说','不告诉你'):
+                out.append(('profile:preference:'+text.casefold(),'用户偏好（回答“'+previous[:100]+'”）：'+text))
+    return out[:4]
+
+
 class AgentMemoryStore:
     def __init__(self,path=None):
         self.path=Path(path or DEFAULT_PATH);self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -110,8 +148,16 @@ class AgentMemoryStore:
     def add_dialogue(self,agent_id,role,content):
         text=safe_text(content)
         if not text:return
-        with self.connect() as db:db.execute('INSERT INTO agent_dialogue(agent_id,role,content,created) VALUES (?,?,?,?)',
-            (str(agent_id),str(role),text,time.time()))
+        with self.connect() as db:
+            previous=db.execute('SELECT role,content FROM agent_dialogue WHERE agent_id=? ORDER BY id DESC LIMIT 1',(str(agent_id),)).fetchone()
+            db.execute('INSERT INTO agent_dialogue(agent_id,role,content,created) VALUES (?,?,?,?)',
+                (str(agent_id),str(role),text,time.time()))
+            if role=='user':
+                context=previous['content'] if previous and previous['role']=='assistant' else ''
+                for kind,fact in profile_facts(content,context):
+                    db.execute('DELETE FROM agent_facts WHERE agent_id=? AND kind=?',(str(agent_id),kind))
+                    db.execute('INSERT INTO agent_facts(agent_id,kind,content,importance,created) VALUES (?,?,?,?,?)',
+                        (str(agent_id),kind,fact,4,time.time()))
 
     def remember(self,agent_id,content,kind='note',importance=2):
         text=safe_text(content)
