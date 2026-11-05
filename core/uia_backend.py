@@ -163,8 +163,9 @@ class UIABackend:
             inputs=[pair for pair in self._find(int(hwnd),control_type='Edit',root=document)
                 if pair[1].get('enabled') and not pair[1].get('password')]
             if search:
-                inputs=[pair for pair in inputs if not pair[1].get('name') or
+                named=[pair for pair in inputs if
                     any(word in pair[1].get('name','').casefold() for word in ('搜索','search'))]
+                if named:inputs=named
             if len(inputs)!=1:raise RuntimeError('页面输入框不唯一或不存在，请说具体名称，未发送操作')
             return dict(hwnd=int(hwnd),element=inputs[0][1])
 
@@ -172,6 +173,33 @@ class UIABackend:
         with self.lock:
             _,item=self._resolve(hwnd,**selector)
             return dict(hwnd=int(hwnd),element=item,verified=True)
+
+    def perceive(self,hwnd,limit=160):
+        """Read visible controls in one native cache batch; never take an action."""
+        hwnd=int(hwnd);limit=max(1,min(int(limit),240));started=time.monotonic()
+        with self.lock:
+            from System.Windows.Automation import CacheRequest
+            cache=CacheRequest();cache.TreeScope=self.TreeScope.Element
+            for prop in ('Name','ControlType','IsEnabled','IsOffscreen','IsPassword','BoundingRectangle'):
+                cache.Add(getattr(self.AutomationElement,prop+'Property'))
+            cache.Add(self.Patterns['set_value'].Pattern);cache.Add(self.Patterns['set_value'].ValueProperty)
+            condition=self.AndCondition(self.PropertyCondition(self.AutomationElement.IsOffscreenProperty,False),
+                self.PropertyCondition(self.AutomationElement.IsPasswordProperty,False))
+            activation=cache.Activate()
+            try:found=self._root(hwnd).FindAll(self.TreeScope.Descendants,condition)
+            finally:activation.Dispose()
+            items=[]
+            for element in found:
+                c=element.Cached;kind=str(c.ControlType.ProgrammaticName).replace('ControlType.','')
+                if kind not in ('Text','Edit','ComboBox','Button','Hyperlink','MenuItem','TabItem','CheckBox','RadioButton','Document','ListItem'):continue
+                item=dict(type=kind,name=str(c.Name or '')[:180],enabled=bool(c.IsEnabled),rect=self._rect(element,True))
+                if kind in ('Edit','ComboBox'):
+                    try:item['value']=str(element.GetCachedPattern(self.Patterns['set_value'].Pattern).Cached.Value or '')[:180]
+                    except Exception:pass
+                if item['name'] or kind in ('Edit','ComboBox'):items.append(item)
+                if len(items)>=limit:break
+            return dict(hwnd=hwnd,elements=items,truncated=len(items)>=limit,source='windows_uia',
+                elapsed_ms=round((time.monotonic()-started)*1000,2),visual_content=False)
 
     def focused(self,hwnd):
         import win32gui

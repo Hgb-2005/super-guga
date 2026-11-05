@@ -300,6 +300,18 @@ class IntegrationTests(unittest.TestCase):
                 self.assertNotIn('answer',resolve.call_args.args[1])
         finally:p.voice=old;p.voice_active=flag
 
+    def test_visible_text_question_uses_local_controls_without_cloud_vision(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        p=self.panel;old=p.voice;flag=p.voice_active;p.voice=AgentRealtimeVoice();p.voice_active=True
+        try:
+            with patch.object(p.runtime.screen_share,'status',return_value=dict(active=True)), \
+                 patch.object(p.runtime.screen_share,'local_context',return_value=dict(fresh=True,age_seconds=.1,context='Edit：今天想看什么；Button：收藏空间')), \
+                 patch('core.screen_visual.observe_frame') as perception,patch.object(p.voice,'resolve_task') as resolve:
+                p._voice_screen_question('local-read','当前网页有哪些按钮和输入框？')
+                perception.assert_not_called();value=resolve.call_args.args[1]
+                self.assertTrue(value['local_only']);self.assertFalse(value['visual_content']);self.assertIn('收藏空间',value['observation'])
+        finally:p.voice=old;p.voice_active=flag
+
     def test_call_screen_context_is_injected_into_task_handoff(self):
         p=self.panel;flag=p.voice_active;p.voice_active=True
         assist=dict(active=True,fresh=True,context='当前是编辑器，目标文件已打开。',

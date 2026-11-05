@@ -18,6 +18,33 @@ import time
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 
+def perception_round(hwnd):
+    from core.local_perception import LocalPerception
+    from core.screen_share import _foreground_snapshot
+    from core.computer_control import ComputerControl
+    from types import SimpleNamespace
+    reader=LocalPerception();samples=[]
+    try:
+        ComputerControl(SimpleNamespace(enabled=True)).execute(dict(action='focus',hwnd=hwnd))
+        for _ in range(3):
+            foreground=_foreground_snapshot()
+            if not foreground or foreground.get('hwnd')!=hwnd:
+                samples.append(dict(fresh=False,error='foreground_changed',process=(foreground or {}).get('process')))
+                break
+            before=time.monotonic();reader.request(foreground)
+            while reader.busy and time.monotonic()-before<5.6:time.sleep(.01)
+            state=reader.context(foreground)
+            names={item.get('name') for item in state.get('elements',[])}
+            samples.append(dict(fresh=state['fresh'],provider_ms=state.get('elapsed_ms'),
+                wall_ms=round((time.monotonic()-before)*1000,2),controls=len(names),
+                input_seen='验收输入' in names,button_seen='执行测试' in names,error=state.get('error')))
+            if not state['fresh']:break
+            if len(samples)<3:time.sleep(1.02)
+    finally:reader.close()
+    return dict(ok=len(samples)==3 and all(s['fresh'] and s['input_seen'] and s['button_seen'] for s in samples),
+        samples=samples,source='windows_uia',remote_model_calls=0,provider_closed=True)
+
+
 def voice_round(page,interaction,hwnd):
     from launcher import _prepare_qt
     _prepare_qt()
@@ -37,6 +64,13 @@ def voice_round(page,interaction,hwnd):
         clips.append(np.interp(np.arange(0,len(samples),1.5),np.arange(len(samples)),samples).astype('<i2').tobytes()+bytes(32000*4))
     SilentStream.source=b''.join(clips);SilentStream.offset=0;SilentStream.feed.clear()
     voice=AgentRealtimeVoice();measurements=[];delegations=[];errors=[];drops=[]
+    from core.local_perception import LocalPerception
+    from core.screen_share import _foreground_snapshot
+    local=LocalPerception()
+    def local_context():
+        foreground=_foreground_snapshot();state=local.context(foreground)
+        return dict(state,active=True,foreground=foreground,context_matches_foreground=state.get('window_matches',False))
+    voice.screen_context_provider=local_context
     def fast(command):
         if command.get('action')!='browser_step':errors.append('unexpected command');return
         def run():
@@ -73,6 +107,7 @@ def voice_round(page,interaction,hwnd):
         try:
             while time.monotonic()-started<28:
                 app.processEvents()
+                local.request(_foreground_snapshot())
                 if voice.connected and time.monotonic()-started>1:SilentStream.feed.set()
                 if len(measurements)>=2 and time.monotonic()-started>17:break
                 time.sleep(.005)
@@ -80,12 +115,14 @@ def voice_round(page,interaction,hwnd):
             connected=voice.connected;voice.stop()
             if voice._thread:voice._thread.join(5)
             app.processEvents()
+            local.close()
     actual=page.input_value('#qa-input');clicks=page.evaluate('window.clicks || 0')
     return dict(ok=bool(len(measurements)==2 and all(m['ok'] for m in measurements) and not errors and not delegations
         and not drops and connected and '界面' in actual and clicks==before+1 and not voice.active),
         measurements=measurements,delegations=len(delegations),drops=len(drops),errors=errors,
         input_verified='界面' in actual,click_verified=clicks==before+1,worker_stopped=not voice.active,
         cdp_input_focused=cdp_input_focused,native_focus_verified=True,fixture_window_guard=True,
+        local_perception_reads=local.reads,screen_bridge_updates=voice._screen_updates_sent,
         seconds=round(time.monotonic()-started,2),microphone=False,speaker=False)
 
 
@@ -133,6 +170,9 @@ def main():
                     if len(windows)!=1:raise RuntimeError('Fixture window not uniquely identified')
                     hwnd=windows[0]['hwnd'];control=ComputerControl(SimpleNamespace(enabled=True))
                     control.execute(dict(action='focus',hwnd=hwnd))
+                    result['local_perception']=perception_round(hwnd)
+                    result['checks'].append(result['local_perception']['ok'])
+                    if not result['local_perception']['ok']:raise RuntimeError('Local perception fixture conditions failed; no actions sent')
                     t=time.perf_counter();backend=UIABackend();result['load_ms']=round((time.perf_counter()-t)*1000,2)
                     for _ in range(3):
                         t=time.perf_counter();snapshot=backend.snapshot(hwnd,240)
@@ -168,6 +208,12 @@ def main():
                                 result['checks'].append(page.evaluate('window.scrollY')<down)
                         result['checks'].append(page.input_value('#qa-input')=='语音原子指令验收')
                         result['checks'].append(page.evaluate('window.clicks')==2)
+                        for text in ('你帮我点一下上面的搜索框','往搜索框里输入自然说法验收','点击那个执行测试好吗'):
+                            command=match(text);t=time.perf_counter();receipt=interaction.execute(command,hwnd=hwnd)
+                            result['command_ms'].append(dict(action=command.get('browser_action'),ms=round((time.perf_counter()-t)*1000,2),ok=receipt.get('ok'),error=receipt.get('error')))
+                            result['checks'].append(receipt.get('ok') is True)
+                        result['checks'].append(page.input_value('#qa-input')=='自然说法验收')
+                        result['checks'].append(page.evaluate('window.clicks')==3)
                         if args.live_voice:
                             result['voice']=voice_round(page,interaction,hwnd)
                             result['checks'].append(result['voice']['ok'])

@@ -2044,8 +2044,8 @@ class PetWindow(QWidget):
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             ctypes.windll.user32.SetWindowLongW(
                 hwnd, GWL_EXSTYLE, style | 0x00000080)
-            # Keep the companion overlay out of its own shared-screen frames.
-            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd,0x11)
+            # The user must be able to record and screenshot the companion.
+            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd,0)
         except Exception as e:
             pass
 

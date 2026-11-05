@@ -18,6 +18,26 @@ from core.execution_contract import ExecutionLedger
 
 
 class BrowserStepTests(unittest.TestCase):
+    def test_everyday_browser_phrasing_stays_local(self):
+        for text,action in (('你帮我点一下上面的搜索框','click'),('点击那个搜索框好吗','click'),
+                ('点开这个页面的登录按钮','click'),('往搜索框里输入“猫，保留标点。”','fill_named'),
+                ('进入我的收藏空间','click'),('点击网页上的收藏空间','click')):
+            with self.subTest(text=text):
+                parsed=match(text)
+                self.assertEqual(parsed.get('action'),'browser_step')
+                self.assertEqual(parsed.get('browser_action'),action)
+        self.assertEqual(match('你帮我点一下上面的搜索框')['target'],'搜索框')
+        self.assertEqual(match('往搜索框里输入“猫，保留标点。”')['text'],'猫，保留标点。')
+        self.assertEqual(match('进入我的收藏空间')['target'],'收藏空间')
+        self.assertEqual(match('点击网页上的收藏空间')['target'],'收藏空间')
+
+    def test_search_field_fill_uses_page_semantics_instead_of_exact_placeholder(self):
+        obj=self.interaction();obj.uia.page_input.return_value=dict(element=dict(ref='search'))
+        with patch('core.desktop_access.DesktopAccess.enabled',new_callable=PropertyMock,return_value=True):
+            result=obj.execute(match('往搜索框里输入“猫，保留标点。”'))
+        self.assertTrue(result['ok']);obj.uia.page_input.assert_called_once_with(123,search=True)
+        obj.uia.read.assert_not_called();self.assertEqual(obj.uia.act.call_args.kwargs['value'],'猫，保留标点。')
+
     def test_common_instructions_route_locally(self):
         for text,action in (('点击搜索按钮','click'),('请帮我点击验收输入','click'),('输入“你好，世界。”','fill'),
                 ('向下滚动','scroll_down'),('返回上一页','back'),('刷新页面','refresh'),
@@ -99,6 +119,18 @@ class BrowserStepTests(unittest.TestCase):
 
 
 class NativeTargetingTests(unittest.TestCase):
+    def test_unique_search_input_accepts_a_content_placeholder(self):
+        b=self.backend();doc=object()
+        item=dict(ref='search',name='今天想看什么',type='Edit',enabled=True,password=False)
+        b._find.side_effect=[[(doc,dict(rect={}))],[(object(),item)]]
+        self.assertEqual(b.page_input(7,search=True)['element']['ref'],'search')
+
+    def test_multiple_non_search_inputs_stay_ambiguous(self):
+        b=self.backend();doc=object()
+        items=[(object(),dict(name=name,enabled=True,password=False)) for name in ('用户名','留言')]
+        b._find.side_effect=[[(doc,dict(rect={}))],items]
+        with self.assertRaisesRegex(RuntimeError,'不唯一'):b.page_input(7,search=True)
+
     def backend(self):
         b=UIABackend.__new__(UIABackend);b.lock=threading.RLock();b.elements={};b.ttl=30;b.cache=object()
         b._find=Mock(return_value=[(object(),dict(ref='unique'))]);b.snapshot=Mock(side_effect=AssertionError('no full-tree scan'))

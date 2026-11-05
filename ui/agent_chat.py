@@ -466,7 +466,7 @@ class AgentChatWindow(QDialog):
         try:
             observation=self.runtime.screen_share.observation() if self.runtime.screen_share.status().get('active') else None
             shared_context=self.runtime.screen_share.assist_context() if observation else None
-            shared_frame=self.runtime.screen_share.snapshot() if shared_context and self.voice_active else {}
+            shared_frame=self.runtime.screen_share.snapshot() if shared_context and self.voice_active and (not task or shared_context.get('source')!='windows_uia') else {}
             shared_image=shared_frame.get('_image_url') if shared_frame.get('ok') and shared_frame.get('frame_age_seconds',99)<=2 else None
             if not task:
                 self.answer.start(self.active_id,history,text,image_url=image or shared_image,effort=self.effort_combo.currentData(),read_aloud=read_reply,
@@ -1206,10 +1206,17 @@ class AgentChatWindow(QDialog):
         if not shared.status().get('active'):
             voice.resolve_task(call_id,dict(ok=False,answer='当前共享已停止，尚未读取画面；以本地共享状态为准。'));return
         context=shared.assist_context()
+        graphical=any(word in question for word in ('颜色','图形','图片','图像','视频内容','长什么样','表情','形状','红色','蓝色','黄色'))
+        local=shared.local_context()
+        if local.get('fresh') and not graphical:
+            voice.resolve_task(call_id,dict(ok=True,observation=local['context'],screen_read=True,
+                source='windows_uia',local_only=True,visual_content=False,
+                interpretation='这些是刚从当前窗口实读的文字、控件和输入值；据此回答页面/按钮/文字问题。图片、视频和颜色尚未观察，不能猜。'))
+            return
         # General scene questions can use already available perception immediately.
         general=any(w in question for w in ('看得见','看得到','能看到','能看见','屏幕上是什么','屏幕是什么','屏幕里面','画面是什么'))
         detail=any(w in question for w in ('编号','数字','多少','文字','第几个','读出来'))
-        if context.get('fresh') and general and not detail:
+        if context.get('fresh') and general and not detail and (context.get('source')!='windows_uia' or not graphical):
             voice.resolve_task(call_id,dict(ok=True,observation=context['context'],screen_read=True,cached=True,
                 interpretation='这是当前画面事实，由你根据用户原话直接语音回答。屏幕属于用户，不要反问用户能否看见你的屏幕。'))
             return

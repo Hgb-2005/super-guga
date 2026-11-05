@@ -70,6 +70,7 @@ class UIAService:
     def read(self,hwnd,**selector):return self.call('read',hwnd,**selector)
     def focused(self,hwnd):return self.call('focused',hwnd)
     def page_input(self,hwnd,search=False):return self.call('page_input',hwnd,search=search)
+    def perceive(self,hwnd,limit=160):return self.call('perceive',hwnd,timeout=1.5,limit=limit)
     def act(self,hwnd,operation,**arguments):return self.call('act',hwnd,operation=operation,**arguments)
     def wait(self,hwnd,seconds=5,**arguments):return self.call('wait',hwnd,timeout=min(32,seconds+1),seconds=seconds,**arguments)
 
@@ -110,7 +111,7 @@ def serve():
                 request=json.loads(line);method=request['method'];hwnd=int(request.get('hwnd',0))
                 if backend is None:backend=UIABackend()
                 if method=='warmup':result=dict(ready=True)
-                elif method in ('snapshot','read','focused','page_input','act','wait'):
+                elif method in ('snapshot','read','focused','page_input','perceive','act','wait'):
                     if method=='act':
                         import win32gui
                         if win32gui.GetForegroundWindow()!=hwnd:raise RuntimeError('前台窗口已变化，未发送操作')

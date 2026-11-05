@@ -17,14 +17,20 @@ def parse_step(value,source_text=''):
         '向上滚动':'scroll_up','往上滚动':'scroll_up','往上翻':'scroll_up','上滑':'scroll_up',
     }
     if value in shortcuts:return dict(common,browser_action=shortcuts[value],target='')
-    click=re.fullmatch(r'(?:点击|点一下|点选|按一下|点)(?:一下)?(?:当前网页上|网页上|页面上|这个页面的)?\s*(.+?)(?:这个按钮|按钮|这个链接|链接)?(?:一下|吧)?',value)
+    entered=re.fullmatch(r'进入(?:我的|这个页面的|当前页面的|网页上的|页面里的)(.+?)(?:好吗|吧)?',value)
+    if entered:value='点击'+entered.group(1)
+    click=re.fullmatch(r'(?:点击|点一下|点选|点开|按一下|点)(?:一下)?(?:当前网页上(?:的)?|网页上(?:的)?|页面上(?:的)?|这个页面的)?\s*(.+?)(?:这个按钮|按钮|这个链接|链接)?(?:一下|好吗|可以吗|吧)?',value)
     if click:
         target=click.group(1).strip().strip('“”"\'')
+        generic=re.fullmatch(r'(?:(?:这个|那个|当前|上面的|页面里的|页面上的|页面的)\s*)+(输入框|搜索框|搜索输入框)',target)
+        if generic:target=generic.group(1)
+        elif not click.group(1).strip().startswith(('“','"',"'")):
+            target=re.sub(r'^(?:这个|那个|上面的|页面里的|页面上的|页面的)+','',target)
         if target and len(target)<=120 and not re.search(r'然后|接着|并且|再帮|屏幕|桌面|窗口|[，,;；]',target):
             return dict(common,browser_action='click',target=target)
-    named=re.fullmatch(r'在(.+?)(?:输入框|框)(?:里|内|中)?(?:输入|填写)[:：\s]*(.+)',value)
+    named=re.fullmatch(r'(?:在|往|向)(.+?)(?:输入框|框)(?:里|内|中)?(?:输入|填写)[:：\s]*(.+)',value)
     if named:
-        original=re.search(r'在(.+?)(?:输入框|框)(?:里|内|中)?(?:输入|填写)[:：\s]*(.+)',source_text or value,re.S)
+        original=re.search(r'(?:在|往|向)(.+?)(?:输入框|框)(?:里|内|中)?(?:输入|填写)[:：\s]*(.+)',source_text or value,re.S)
         text=(original.group(2) if original else named.group(2)).strip()
         if len(text)>=2 and (text[0],text[-1]) in (('“','”'),('"','"'),("'","'")):text=text[1:-1]
         return dict(common,browser_action='fill_named',target=named.group(1).strip(),text=text)
@@ -80,7 +86,9 @@ class BrowserInteraction:
                 message='已发送'+{'back':'返回','forward':'前进','refresh':'刷新','enter':'回车'}.get(action,'浏览器快捷键')
             elif action in ('fill','append','clear','fill_named'):
                 if action=='fill_named':
-                    item=self.uia.read(hwnd,name=command['target'],control_type='Edit')['element']
+                    if command['target'] in ('搜索','搜索框','搜索输入','搜索输入框','当前','这个','输入'):
+                        item=self.uia.page_input(hwnd,search='搜索' in command['target'])['element']
+                    else:item=self.uia.read(hwnd,name=command['target'],control_type='Edit')['element']
                     text=command['text']
                 else:
                     item=self.uia.focused(hwnd)['element'];text='' if action=='clear' else command['target']

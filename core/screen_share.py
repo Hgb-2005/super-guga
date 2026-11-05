@@ -63,6 +63,7 @@ class ScreenShareController(QObject):
         self._capture_errors=0;self._capture_recoveries=0
         self._analysis_pending=False
         self._context_frame_at=0.0
+        self._local_perception=None
 
     def start(self,fps=None,reason='manual'):
         if fps is not None:
@@ -86,6 +87,8 @@ class ScreenShareController(QObject):
             self._foreground=None;self._context_foreground=None;self._window_changes=0
             self._capture_errors=0;self._capture_recoveries=0
             self._analysis_pending=True;self._gray=None;self._last_at=0.0;self._last_analysis_request=0.0
+            from core.local_perception import LocalPerception
+            self._local_perception=LocalPerception()
             self._thread=threading.Thread(target=self._capture_loop,args=(generation,),name='guga-screen-share',daemon=True)
             self._thread.start()
         return dict(started=True,already_active=False,**self.status())
@@ -98,6 +101,8 @@ class ScreenShareController(QObject):
             self._context='';self._context_at=0.0;self._analysis_pending=False
         thread=self._thread
         if thread and thread.is_alive() and thread is not threading.current_thread():thread.join(timeout=1.5)
+        local=self._local_perception;self._local_perception=None
+        if local:local.close()
         return self.status()
 
     def status(self):
@@ -120,7 +125,8 @@ class ScreenShareController(QObject):
                 context_foreground=dict(self._context_foreground) if self._context_foreground else None,
                 window_changes=self._window_changes,capture_recoveries=self._capture_recoveries,
                 capture_scope=self.capture_scope,
-                model_bridge='change_sampling_primary_chat_fallback')
+                model_bridge='local_uia_then_change_sampling_vision',
+                local_perception={k:v for k,v in self.local_context().items() if k not in ('context','elements')})
 
     def context(self,max_age=12):
         state=self.status()
@@ -186,12 +192,21 @@ class ScreenShareController(QObject):
 
     def assist_context(self,max_age=12):
         state=self.context(max_age)
+        local=self.local_context()
+        if local.get('fresh'):
+            state.update(context=local['context'],fresh=True,context_matches_foreground=True,
+                context_foreground=state.get('foreground'),context_age_seconds=local['age_seconds'])
         return dict(active=state['active'],fresh=state['fresh'],context=state.get('context',''),
+            source='windows_uia' if local.get('fresh') else 'screen_vision',visual_content=not local.get('fresh'),
             foreground=state.get('foreground'),context_foreground=state.get('context_foreground'),
             context_matches_foreground=state.get('context_matches_foreground'),
             unchanged_since_analysis=state.get('unchanged_since_analysis'),
             frame_age_seconds=state.get('frame_age_seconds'),context_age_seconds=state.get('context_age_seconds'),
             sequence=state.get('sequence'),frame_size=state.get('frame_size'),error=state.get('error'))
+
+    def local_context(self):
+        local=self._local_perception
+        return local.context(self._foreground) if local and self._active else dict(fresh=False,source='windows_uia')
 
     def snapshot(self):
         with self._lock:
@@ -232,6 +247,8 @@ class ScreenShareController(QObject):
                     if self._seq==1 or change>=1.5 or window_changed:self._analysis_pending=True
                     capture_errors=self._capture_errors;self._capture_errors=0
                 if capture_errors:self._capture_recoveries+=1
+                local=self._local_perception
+                if local:local.request(foreground)
                 self.frame_ready.emit(dict(sequence=self._seq,captured_at=self._last_at,change=round(change,2),
                     window_changed=window_changed,capture_box=capture_box,size=self._frame_size,foreground=foreground))
                 if self._analysis_pending and time.monotonic()-self._last_analysis_request>=self.analysis_interval:

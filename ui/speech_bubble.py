@@ -128,7 +128,7 @@ class PetSpeechBubble(QFrame):
         if self.pet.isVisible():
             try:
                 import ctypes
-                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()),0x11)
+                ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()),0)
             except Exception:pass
             self.show()
         if not self.speaking:
