@@ -10,7 +10,8 @@ from PyQt5.QtCore import pyqtSignal
 from core.realtime_voice import RealtimeVoice, session_settings
 from core.fast_commands import match as match_fast_command, command_key, command_text
 
-ROUTER_VERSION='2026-11-05.command-session.1'
+ROUTER_VERSION='2026-11-05.command-session.2'
+SCREEN_CONTEXT_MIN_INTERVAL=10
 
 
 DELEGATE_TOOL = dict(type='function', name='ask_deepseek',
@@ -194,11 +195,12 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._screen_checked_at=now;state=self._screen_state()
         signature=json.dumps(dict(screen={k:v for k,v in state.items() if k not in ('sequence','context_age_seconds')},web=self._web_state(),task=self._task_context,memory=self.long_term_memory),sort_keys=True,ensure_ascii=False)
         if not force and signature==self._screen_signature:return
-        # R4: a task can change the signature every second. Do not re-send the
-        # whole instructions+tools blob while the model is generating or the
-        # user is talking; a server-side rate error used to end the whole call.
-        if not force and now-self._screen_last_sent_at<2:return
-        if not force and (self._generating or self._audio_request_pending or self._user_speaking):return
+        # Coalesce frequent screen/memory changes. Native screen reads still
+        # return current facts; background instruction updates need not follow
+        # capture FPS, and at most one update may await acknowledgment.
+        if not force and now-self._screen_last_sent_at<SCREEN_CONTEXT_MIN_INTERVAL:return
+        if not force and self._screen_updates_sent>self._screen_updates_acked:return
+        if not force and (self._generating or self._audio_request_pending or self._user_speaking or self._playing or bool(self._pcm)):return
         # Replace session instructions; never append fake user messages or request speech.
         settings=self._session_settings()
         self._send(dict(type='session.update',session=dict(instructions=settings['instructions'])))
@@ -679,6 +681,8 @@ class AgentRealtimeVoice(RealtimeVoice):
 
     def _connection(self):
         self._screen_configured=False;self._screen_signature=None
+        self._screen_updates_sent=0;self._screen_updates_acked=0
+        self._screen_checked_at=0;self._screen_last_sent_at=0
         self._audio_request_pending=False;self._cancel_on_created=False
         try:
             super()._connection()

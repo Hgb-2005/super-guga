@@ -41,16 +41,36 @@ class RealtimeAgentTests(unittest.TestCase):
             engine._sync_screen_context(force=True)
             self.assertEqual(send.call_args.args[0]['type'],'session.update')
             self.assertEqual(list(send.call_args.args[0]['session']),['instructions'])
+            engine._handle_event(dict(type='session.updated'))
             engine._screen_checked_at=0;state['sequence']=2;engine._sync_screen_context()
             self.assertEqual(send.call_count,1) # no new model request for every captured frame
             state.update(fresh=False,context='当前画面已变化，待重新读取');engine._screen_checked_at=0
-            # R4 throttle: wait out the ≥2s window before expecting a new update.
-            engine._screen_last_sent_at=time.monotonic()-3
+            engine._screen_last_sent_at=time.monotonic()-11
             engine._sync_screen_context();self.assertEqual(send.call_count,2)
             self.assertIn('待重新读取',send.call_args.args[0]['session']['instructions'])
             self.assertFalse(any(c.args[0]['type']=='response.create' for c in send.call_args_list))
         engine._handle_event(dict(type='session.updated'))
-        self.assertEqual(engine.screen_bridge_status()['updates_acked'],1)
+        self.assertEqual(engine.screen_bridge_status()['updates_acked'],2)
+
+    def test_screen_updates_wait_for_ack_and_coalesce_to_latest_state(self):
+        engine=self.engine();state=dict(active=True,fresh=True,context='原画面')
+        engine.screen_context_provider=lambda:state;engine._ws=object();engine._screen_configured=True
+        with patch.object(engine,'_send') as send:
+            engine._sync_screen_context(force=True)
+            state['context']='中间画面';engine._screen_checked_at=0;engine._screen_last_sent_at=time.monotonic()-11
+            engine._sync_screen_context();self.assertEqual(send.call_count,1)
+            state['context']='最新画面';engine._handle_event(dict(type='session.updated'));engine._screen_checked_at=0
+            engine._sync_screen_context();self.assertEqual(send.call_count,2)
+            self.assertIn('最新画面',send.call_args.args[0]['session']['instructions'])
+            self.assertNotIn('中间画面',send.call_args.args[0]['session']['instructions'])
+
+    def test_screen_updates_do_not_interrupt_playback_or_unacknowledged_reply(self):
+        for busy in ('_playing','_audio_request_pending'):
+            engine=self.engine();engine._ws=object();engine._screen_configured=True
+            engine.screen_context_provider=lambda:dict(active=True,fresh=True,context='新画面')
+            setattr(engine,busy,True)
+            with patch.object(engine,'_send') as send:engine._sync_screen_context()
+            send.assert_not_called()
 
     def test_read_screen_dispatches_to_host_without_starting_task(self):
         engine=self.engine();questions=[];tasks=[]
