@@ -53,8 +53,8 @@ class ComputerControl:
 
     def _uia(self):
         if self._uia_backend is None:
-            from core.uia_backend import UIABackend
-            self._uia_backend=UIABackend()
+            from core.uia_service import shared_service
+            self._uia_backend=shared_service()
         return self._uia_backend
 
     def execute(self,args,cancel=None):
@@ -133,8 +133,9 @@ class ComputerControl:
         if action=='accessibility':
             hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
             if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭')
+            from core.uia_backend import UIAUnavailable
             try:return self._uia().snapshot(hwnd,args.get('limit',240))
-            except Exception:pass
+            except UIAUnavailable:pass
             script='''Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $rootElement=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]HWND_VALUE)
@@ -175,7 +176,7 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 3'''.replace('HWND_VALUE'
                     if not rect:raise RuntimeError('UIA控件没有可点击区域')
                     user.SetCursorPos(int((rect['left']+rect['right'])/2),int((rect['top']+rect['bottom'])/2))
                     user.mouse_event(2,0,0,0,0);user.mouse_event(4,0,0,0,0)
-                    result['method']='MouseFallback'
+                    result['method']='MouseFallback';result['input_sent']=True
                 else:result.pop('rect',None)
                 self.observation=None
                 return result
@@ -224,6 +225,10 @@ $r=$c.BoundingRectangle
             return dict(input_sent=True,action='uia',needs_observe=True,method=method,
                 control=dict(name=result.get('name'),id=result.get('id'),type=result.get('type')),
                 message='UIA操作已执行；仍需 accessibility 或 observe 验证结果')
+        if action=='uia_read':
+            hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
+            return self._uia().read(hwnd,ref=args.get('uia_ref'),name=args.get('uia_name',''),
+                automation_id=args.get('uia_id',''),control_type=args.get('uia_type',''))
         if action=='uia_wait':
             hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
             if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭')

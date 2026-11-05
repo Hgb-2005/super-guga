@@ -6,9 +6,11 @@
 2. **已观察窗口的键盘和鼠标**：只能在最近 30 秒的截图观察 ID 和前台窗口未变化时发送；输入后必须重新观察。
 3. **视觉模型定位**：UIA 无法识别自绘控件、画布或游戏画面时才使用。
 
-`core/uia_backend.py` 通过 pythonnet 在进程内加载 Windows UIAutomation，按窗口控件视图广度优先遍历并限制节点数和时间；返回稳定 `ref`、控件类型、支持的 Pattern 和区域。`computer(action=uia)` 支持 `ref`、`invoke`、`set_value`、`focus`；控件没有可调用 Pattern 时才回退到控件中心点击。`uia_wait` 可等待控件出现或 enabled/offscreen 状态变化，不再依赖固定 sleep。
+`core/uia_service.py` 在常驻的独立 MTA 子进程内通过 pythonnet 加载 Windows UIAutomation，使慢控件不能卡住 Qt 收音与对话线程。明确名称、AutomationId、类型时执行原生条件查询；需要整页认识时才广度优先遍历。属性批量缓存，返回稳定 `ref`、控件类型、Pattern 和区域。`computer(action=uia)` 支持 `ref`、`invoke`、`set_value`、`focus`；`uia_read` 定向读取目标；`uia_wait` 定向等待出现或 enabled/offscreen 变化。控件没有可调用 Pattern 时才回退中心点击；已经尝试的 Pattern 出错时不自动换另一种动作。
 
-这一层已经绕开“每次动作重启 PowerShell”；UIA 客户端常驻，控件引用在 30 秒内复用。工具仍返回 `needs_observe=True`，因此执行账本不会直接把它当成完成，必须重新读取控件树或观察截图验证。
+控件引用在 30 秒内复用，并在发送动作前更新和核对。重名目标拒绝猜第一个。`set_value` 精确回读内容、`focus` 回读焦点成功后返回 `verified=True`，无需再经模型截图确认同一个动作；点击和提交只表示动作已发送，仍需定向核对业务结果。普通调用上限 2.5 秒，初始化 4 秒；等待按指定时限，最长 32 秒。超时停止对应 UIA 子进程并报告结果不确定，不自动重放。仅底层 UIA 依赖不可用时保留原 PowerShell 兼容路径。
+
+浏览器长语音单步操作直接走本地执行器，成功即时气泡反馈并继续听下一句；不再每步追加确认音频。详细指令、实测和范围见 [浏览器响应修复与验收](browser-response-20261104.md)。
 
 2026-10-21 本机实测：桌面控件视图截取 30 个节点约 0.33 秒；临时记事本窗口截取 57 个节点约 0.79 秒，识别到 MenuBar、MenuItem、Document、Button、List、Tab 等控件。该结果证明读取链路可用，尚未证明任意应用的 Invoke/Value Pattern 都完整实现。
 

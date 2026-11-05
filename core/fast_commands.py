@@ -39,6 +39,8 @@ def command_text(text):
 
 
 def command_key(command):
+    if command.get('action')=='browser_step':
+        return ('browser_step',command.get('browser_action'),str(command.get('target','')),str(command.get('text','')))
     target=str(command.get('target','')).casefold()
     if target in BROWSER_NAMES:target='浏览器'
     return (command.get('action'),command.get('kind'),target)
@@ -87,6 +89,9 @@ def match(text):
     """Parse a high-confidence local action without performing it."""
     value=command_text(text)
     prefix=dict(source_text=normalize(text))
+    from core.browser_interaction import parse_step
+    browser_step=parse_step(value,str(text or ''))
+    if browser_step:return browser_step
     # A search/open prefix must not swallow the rest of a multi-step job.
     if re.search(r'(?:[，,。；;]|然后|接着|并且|并)(?:再|请|帮我|将|把)?[^，,。；;]{0,20}(?:写入|写成|保存|发送|创建|整理成|下载|安装)',value):
         return dict(matched=False,action='none',silent=False)

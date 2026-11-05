@@ -1,7 +1,7 @@
 """Deterministic completion checks for tool side effects and verification receipts."""
 
 INPUT_ACTIONS={"click","double_click","drag","scroll","hotkey","type","fill","editor_select_tail","uia"}
-VERIFY_ACTIONS={"observe","accessibility"}
+VERIFY_ACTIONS={"observe","accessibility","uia_read"}
 ACTION_WORDS=("打开","启动","关闭","读取","修改","写入","保存","运行","安装","下载",
               "删除","移动","复制","重命名","上传","提交","点击","输入","执行","修复",
               "测试","检查窗口","截屏","看屏幕","整理文件","创建文件","发送","发一段","发一句")
@@ -79,13 +79,20 @@ class ExecutionLedger:
                 for item in self.pending:
                     if item.get('category')=='application_window':item['hwnd']=args.get('hwnd')
             if action in INPUT_ACTIONS and ok:
+                verification=result.get('verification') or {}
+                if (action=='uia' and result.get('verified') is True and verification.get('matched') is True
+                        and verification.get('kind') in ('value_equals','keyboard_focus')):
+                    self.completed.append(dict(category='computer_verified',action=action,hwnd=args.get('hwnd')))
+                    self.failures.pop('computer',None)
+                    return
                 item=dict(category="computer_input",action=action,hwnd=args.get("hwnd"),
                           description=f"computer.{action} 已发送，尚未复查")
                 self.pending.append(item)
                 self.failures.pop("computer",None)
             elif action in VERIFY_ACTIONS and ok:
-                self.pending=[x for x in self.pending if x.get("category")!="computer_input"]
                 observed=args.get('hwnd') or result.get('hwnd')
+                self.pending=[x for x in self.pending if not (x.get('category')=='computer_input' and
+                    (not x.get('hwnd') or (observed and x.get('hwnd')==observed)))]
                 if observed:
                     self.pending=[x for x in self.pending if not (x.get('category')=='application_window' and x.get('hwnd')==observed)]
                 self.failures.pop("computer",None)

@@ -91,7 +91,7 @@ class RealtimeAgentTests(unittest.TestCase):
         while True:
             try:item=engine._commands.get_nowait()
             except Exception:break
-            if item[0]=='bg_notice':notices.append(item)
+            if item[0]=='fast_notice':notices.append(item)
         self.assertEqual(len(notices),1)
         self.assertIn('浏览器',notices[0][2])
 

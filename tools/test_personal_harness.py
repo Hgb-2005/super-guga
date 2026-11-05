@@ -125,6 +125,27 @@ class IntegrationTests(unittest.TestCase):
                 self.assertIsNone(p._pending_execution)
         finally:
             p.busy=False;p.voice_active=False;p._pending_execution=None
+
+    def test_slow_browser_provider_keeps_qt_responsive_and_never_starts_task_model(self):
+        from core.fast_commands import match
+        p=self.panel;release=threading.Event();entered=threading.Event();ticks=[]
+        old=getattr(p,'_browser_interaction',None)
+        def slow(command):
+            entered.set();release.wait(2)
+            return dict(ok=False,error='provider timeout',action_sent=None)
+        p._browser_interaction=Mock();p._browser_interaction.execute.side_effect=slow
+        try:
+            with patch.object(p.agent,'start') as agent,patch.object(p.runtime.dsh,'start') as dsh,patch.object(p,'_show_active_bubble'):
+                start=time.monotonic();receipt=p._fast_command(match('点击测试按钮'))
+                self.assertLess(time.monotonic()-start,.2);self.assertTrue(receipt['execution_pending'])
+                self.assertTrue(entered.wait(.5));QTimer.singleShot(0,lambda:ticks.append(True))
+                self.pump(lambda:bool(ticks),.5)
+                self.assertTrue(p._fast_inflight)
+                release.set();self.pump(lambda:not p._fast_inflight,1)
+                agent.assert_not_called();dsh.assert_not_called()
+                self.assertFalse(p._last_fast_result['ok'])
+        finally:
+            release.set();p._browser_interaction=old;p._direct_control_until=0
     def test_close_page_voice_bypasses_confirmation_and_dsh(self):
         p=self.panel;voice=Mock();old=p.voice;p.voice=voice;p.voice_active=True;p.busy=False
         p._pending_execution=dict(text='旧的复杂任务',created=time.monotonic())

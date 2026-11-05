@@ -136,6 +136,7 @@ class AgentChatWindow(QDialog):
 
     def companion_chat_allowed(self):
         """Let background work coexist with initiative without overlapping a foreground answer."""
+        if time.monotonic()<getattr(self,'_direct_control_until',0):return False
         if self.busy and self._run_kind=='answer':return False
         if self.short_voice.active or self.dialogue.active:return False
         if self._task_speech.pending or self._pending_tts_display is not None:return False
@@ -1090,6 +1091,9 @@ class AgentChatWindow(QDialog):
                     return
                 cfg = load_settings()
             self.voice_active = True
+            from core.browser_interaction import BrowserInteraction
+            if getattr(self,'_browser_interaction',None) is None:self._browser_interaction=BrowserInteraction()
+            self._browser_interaction.prewarm()
             self._voice_readback = False
             if self.voice:
                 self.voice.deleteLater()
@@ -1418,6 +1422,21 @@ class AgentChatWindow(QDialog):
             self.voice_button.setChecked(False)
             self._last_fast_result=dict(ok=True,message='已停止实时语音对话')
             return self._last_fast_result
+        if command.get('action')=='browser_step':
+            self._direct_control_until=time.monotonic()+60
+            if self._fast_inflight or (self.busy and self._run_kind in ('task','dsh')):
+                return self._finish_fast_command(command,dict(ok=False,code='desktop_busy',action_sent=False,
+                    error='已有界面任务正在执行，本次未发送操作'))
+            import threading
+            from core.browser_interaction import BrowserInteraction
+            interaction=getattr(self,'_browser_interaction',None)
+            if interaction is None:self._browser_interaction=interaction=BrowserInteraction()
+            self._fast_inflight=True
+            command=dict(command,_conversation_id=self.active_id)
+            self._last_fast_result=dict(ok=True,execution_pending=True,message='正在执行这一步')
+            def step():self.fast_result.emit(command,interaction.execute(command))
+            threading.Thread(target=step,name='guga-browser-step',daemon=True).start()
+            return self._last_fast_result
         if command.get('action') in ('open_app','open_url','web_search'):
             # Shell/default-browser handlers can block. Launching must never
             # freeze the Qt thread that receives voice events and user input.
@@ -1481,6 +1500,7 @@ class AgentChatWindow(QDialog):
             self.voice.complete_fast_command(command['fast_id'],result)
         if result.get('ok'):
             self.status.setText(result.get('message','快速命令已完成'))
+            if command.get('action')=='browser_step':self._show_active_bubble(result.get('message','已执行这一步'))
             if command.get('_conversation_id'):
                 self.store.append(command['_conversation_id'],'assistant',result.get('message','快速命令已完成'))
                 self.render()
@@ -1498,6 +1518,8 @@ class AgentChatWindow(QDialog):
         self.pet._on_user_transcript(who, text)
         if who=='饲养员':
             self._last_user_activity=time.monotonic()
+            from core.fast_commands import match
+            if match(text).get('action')!='browser_step':self._direct_control_until=0
             team=getattr(self.pet,'_multi_agent',None)
             if team:team.user_interaction(self.active_agent_id)
         if who=='饲养员' and self.busy and self._task_control.pending:

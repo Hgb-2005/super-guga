@@ -81,6 +81,9 @@ def _show_error(text):
 
 
 def main():
+    if '--uia-worker' in sys.argv:
+        from core.uia_service import serve
+        serve();return
     # 把输出重定向到 startup.log（pythonw 默认无控制台）
     try:
         logf = open(LOG_PATH, 'wb')

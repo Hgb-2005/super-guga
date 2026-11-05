@@ -209,6 +209,8 @@ class AppRuntime:
                         media_workflow=self.media.status(),
                         personal_harness=dict(backend='auto:local-first',tickets=self.dsh.archive.recent(self.panel.active_agent_id,limit=5)),
                         assistant_contract=dict(version=HARNESS_VERSION,routing='local_first_dsh_for_complex_engineering',
+                            browser_control=dict(mode='current_page_single_step',task_model=False,
+                                success_feedback='immediate_bubble',manual_quiet_seconds=60),
                             conversation=dict(mode='awake' if self.panel.voice_active else 'companion',
                                 companion_interval_seconds=self.panel.proactive.interval_seconds,
                                 news_refresh_seconds=self.panel.proactive.news_refresh_seconds,
