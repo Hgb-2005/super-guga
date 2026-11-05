@@ -15,6 +15,10 @@ SCRIPT_ALIASES = {
 }
 
 
+class AppResolutionError(ValueError):
+    code='app_not_found'
+
+
 class AuthorizedApps:
     def __init__(self, path=None):
         self.path = Path(path or ROOT / 'runtime/chat/authorized_apps.json')
@@ -96,6 +100,8 @@ class AuthorizedApps:
         if name in BROWSER_NAMES:
             return dict(name=name,**_open_app(name))
         entries = self.available()
+        canonical=next((key for key in entries if key.casefold()==str(name).casefold()),None)
+        if canonical is not None:name=canonical
         if name not in entries:
             target=Path(name).expanduser()
             # Accept the user's natural aliases for the owner enrollment script.
@@ -103,7 +109,7 @@ class AuthorizedApps:
             alias=next((value for key,value in SCRIPT_ALIASES.items() if normalized in (key,key+'脚本',key+'的脚本')),None)
             if alias and alias.is_file():target=alias
             elif not self.access.enabled or not target.is_absolute() or target.suffix.lower() not in ('.exe','.lnk','.bat','.cmd','.ps1'):
-                raise ValueError('请先列出软件取得精确名称；完整访问模式也可传本机 exe/lnk/bat/cmd/ps1 绝对路径')
+                raise AppResolutionError('未找到名为“'+str(name)[:80]+'”的软件；已检查运行窗口和可用软件名称。请提供准确名称或软件路径')
         else:
             target = Path(entries[name])
         if not target.is_file():

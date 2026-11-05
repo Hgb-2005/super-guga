@@ -62,7 +62,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(results[0]['ok'])
         self.assertIn('actual_x', requests[1][0][-1]['content'])
         self.assertEqual(sum(not tools for _, tools in requests), 1)
-        self.assertIn('本轮已自问一次', requests[-1][0][-1]['content'])
+        feedback=[m['content'] for messages,_ in requests for m in messages if m.get('role')=='tool']
+        self.assertTrue(any('本轮已自问一次' in str(content) for content in feedback))
 
     def test_cancel_prevents_tools_after_network_return(self):
         class Bridge:
@@ -84,7 +85,7 @@ class WorkspaceTests(unittest.TestCase):
         try:
             client.initialize()
             names = {t['name'] for t in client.request('tools/list')['tools']}
-            self.assertEqual(names, {'app_state', 'pet_control', 'workspace', 'applications'})
+            self.assertEqual(names, {'app_state', 'pet_control', 'workspace', 'applications','voice_session','screen_share'})
         finally:
             client.close()
         self.assertIsNotNone(client.proc.poll())

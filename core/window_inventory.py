@@ -26,7 +26,10 @@ def matching_windows(windows, query=''):
                    for term in terms) or (query.endswith('.exe') and process == stem + '.exe')
     processes = [window for window in windows if matches_process(window)]
     # Prefer executable identity over an unrelated document merely mentioning the app.
-    return processes or [window for window in windows if query in str(window.get('title','')).casefold()]
+    # A known app identity must not degrade into a title substring: 企业微信
+    # and a document mentioning 微信 are not the Weixin/WeChat application.
+    if processes or query in ALIASES:return processes
+    return [window for window in windows if query in str(window.get('title','')).casefold()]
 
 
 def list_windows(query='', limit=100):

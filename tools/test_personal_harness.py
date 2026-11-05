@@ -126,6 +126,33 @@ class IntegrationTests(unittest.TestCase):
         finally:
             p.busy=False;p.voice_active=False;p._pending_execution=None
 
+    def test_message_question_and_asr_commas_reach_computer_tools_instead_of_qa(self):
+        p=self.panel;old=p.voice;voice=Mock();p.voice=voice;p.voice_active=True;p._pending_execution=None
+        request='打开，微信，找到验收联系人，发送，最近怎么样，忙完了吗'
+        try:
+            with patch.object(p,'sender',return_value=voice),patch.object(p.agent,'start') as agent, \
+                 patch.object(p.answer,'start') as answer,patch.object(p.dialogue,'start') as dialogue, \
+                 patch.object(p.runtime.dsh,'start') as dsh,patch.object(p,'_show_active_bubble'):
+                p._voice_request('fixture-send',request)
+                agent.assert_called_once();self.assertEqual(agent.call_args.args[2],request)
+                self.assertEqual(p._run_kind,'task');answer.assert_not_called();dialogue.assert_not_called();dsh.assert_not_called()
+        finally:
+            p.voice=old;p.voice_active=False;p.busy=False;p._run_kind=None;p._voice_task=None;p._task_heartbeat_timer.stop()
+
+    def test_typed_installed_app_request_bypasses_models_and_runs_on_worker(self):
+        p=self.panel;release=threading.Event();entered=threading.Event()
+        def launch(name):
+            self.assertEqual(name,'微信');entered.set();release.wait(2)
+            return dict(name=name,launch_requested=True,verified_running=False,message='验收启动请求')
+        try:
+            with patch('core.authorized_apps.AuthorizedApps.open',side_effect=launch), \
+                 patch.object(p.agent,'start') as agent,patch.object(p.answer,'start') as answer:
+                self.assertTrue(p.send('打开，微信'));self.assertTrue(entered.wait(.5))
+                self.assertTrue(p._last_fast_result['execution_pending']);release.set()
+                self.pump(lambda:getattr(p,'_fast_launch_count',0)==0,1)
+                self.assertTrue(p._last_fast_result['ok']);agent.assert_not_called();answer.assert_not_called()
+        finally:release.set()
+
     def test_slow_browser_provider_keeps_qt_responsive_and_never_starts_task_model(self):
         from core.fast_commands import match
         p=self.panel;release=threading.Event();entered=threading.Event();ticks=[]

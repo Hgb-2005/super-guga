@@ -1,4 +1,5 @@
 """Deterministic completion checks for tool side effects and verification receipts."""
+import re
 
 INPUT_ACTIONS={"click","double_click","drag","scroll","hotkey","type","fill","editor_select_tail","uia"}
 VERIFY_ACTIONS={"observe","accessibility","uia_read"}
@@ -20,8 +21,17 @@ def _question_like(text):
 
 
 def requires_execution(prompt):
-    text=str(prompt or "").lower()
+    text=str(prompt or "").lower().strip()
     if not any(word in text for word in ACTION_WORDS):return False
+    value=re.sub(r'^(?:小?咕嘎[，,\s]*)?(?:(?:请你?|麻烦你?|帮我|给我|替我|我要你|你能不能|你能|你可以|你可不可以|能不能|能否|可不可以|可以)[，,\s]*)*','',text)
+    if re.match(r'^(?:解释|讲解|告诉我|教我).*(?:如何|怎么|为什么|是什么|什么意思)',value):return False
+    imperative=re.match(r'^('+'|'.join(sorted(ACTION_WORDS,key=len,reverse=True))+r')[，,:：\s]*(.*)',value)
+    if imperative:
+        # A question inside a message/field is an action argument, not the
+        # user's intent. Only inspect the leading instruction clause.
+        clause=re.split(r'[，,。;；]|(?:发送|发给)',imperative.group(2),maxsplit=1)[0]
+        knowledge=tuple(w for w in QUESTION_WORDS if w not in ('吗','呢','？','?'))
+        if clause and not any(w in clause for w in knowledge):return True
     if _question_like(text) and not any(word in text for word in REQUEST_WORDS):return False
     return True
 

@@ -35,6 +35,7 @@ def command_text(text):
     value=re.sub(r'(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])','',value)
     value=re.sub(r'^(?:小?咕嘎)[，,\s]*','',value)
     value=re.sub(r'^(?:(?:你能不能|你能|你可以|请你?|麻烦你?|能不能|可以请你|可以|帮我|给我|替我)[，,\s]*)+','',value)
+    value=re.sub(r'^((?:打开|启动|访问|前往)(?:一下)?)[，,:：\s]+',r'\1',value)
     return value
 
 
@@ -172,15 +173,14 @@ def match(text):
             return dict(prefix,matched=True,action='web_search',silent=True,priority='fast',kind='url',target=url)
     match=re.fullmatch(r'(?:打开|启动)(?:一下)?\s*(.+)',value)
     if match:
-        target=match.group(1).strip()
+        target=re.sub(r'(?:一下|好吗|可以吗|吗|吧)$','',match.group(1).strip()).strip()
         if target in BROWSER_NAMES:
             return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',target='浏览器')
         if target and len(target)<=80 and not re.search(
-                r'然后|接着|并且|再帮|并|不要|如果|输入|打字|填写|写入|写一|写个|撰写|保存|发送|搜索|查找|编辑|点击|登录|录入|修复|安装|下载',target):
-            # Unknown names are a reasoning task, never assume they are apps.
-            from core.authorized_apps import AuthorizedApps
-            if target in AuthorizedApps().entries():
-                return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',target=target)
+                r'然后|接着|并且|再帮|并|不要|如果|输入|打字|填写|写入|写一|写个|撰写|保存|发送|搜索|查找|找到|编辑|点击|登录|录入|修复|安装|下载|网站|网页|网址|官网|是什么|什么意思|为什么|怎么|如何|会怎样|会怎么样|[，,。;；：:]|[?？]',target):
+            # Resolve installed apps on the existing launch worker, never scan
+            # the Start Menu on Qt/voice threads or require a duplicate grant.
+            return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',target=target)
     return dict(matched=False,action='none',silent=False)
 
 
@@ -217,7 +217,7 @@ def execute(result):
     try:
         answer=_execute(result)
     except Exception as exc:
-        answer=dict(ok=False,error=str(exc))
+        answer=dict(ok=False,error=str(exc),code=getattr(exc,'code',None))
     answer['dispatch_ms']=round((time.perf_counter()-started)*1000,2)
     if isinstance(result,dict) and isinstance(result.get('recognized_at'),(int,float)):
         answer['transcript_to_result_ms']=round((time.monotonic()-result['recognized_at'])*1000,2)

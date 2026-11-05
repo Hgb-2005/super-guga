@@ -1476,7 +1476,7 @@ class AgentChatWindow(QDialog):
             query=command['report_query']
             result.update(execution_pending=True,message='已请求默认浏览器搜索，正在核对网页摘要后汇报')
             QTimer.singleShot(0,lambda:self.send('请用web_search搜索：'+query+'。根据工具返回的摘要简短汇报，并附来源链接。浏览器已提交打开请求，无需再次打开。',record_user=False))
-        if not result.get('ok') and command.get('action') in ('open_app','open_url','web_search') and command.get('source_text') and not result.get('launch_requested') and current:
+        if not result.get('ok') and command.get('action') in ('open_app','open_url','web_search') and result.get('code')!='app_not_found' and command.get('source_text') and not result.get('launch_requested') and current:
             original=command['source_text'];failure=dict(result)
             result=dict(ok=True,execution_pending=True,delegated=True,silent=True,message='快捷路径未完成，已交给内部 DeepSeek 继续处理')
             context=dict(origin='voice' if self.voice_active else 'text',fast_failure=failure,original_request=original)

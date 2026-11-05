@@ -10,7 +10,7 @@ from PyQt5.QtCore import pyqtSignal
 from core.realtime_voice import RealtimeVoice, session_settings
 from core.fast_commands import match as match_fast_command, command_key, command_text
 
-ROUTER_VERSION='2026-11-04.browser-response.1'
+ROUTER_VERSION='2026-11-05.command-session.1'
 
 
 DELEGATE_TOOL = dict(type='function', name='ask_deepseek',
@@ -105,6 +105,8 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._fast_jobs = {}
         self._input_epoch = 0
         self._pending_user_text = None
+        self._audio_request_pending=False
+        self._cancel_on_created=False
         self._speech_stopped_at=None
         self._last_asr_delay_ms=None
         self._input_text=None
@@ -129,12 +131,15 @@ class AgentRealtimeVoice(RealtimeVoice):
             generating=self._generating,playing=self._playing,task_running=self._task_context.get('running',False))
 
     def _request_audio_response(self):
-        if self._generating or self._response_id or self._user_speaking:
+        if self._generating or self._response_id or self._audio_request_pending or self._user_speaking:
             self._followup_ready=True
             return
-        self._generating=True;self._first_audio_pending=True
+        self._generating=True;self._first_audio_pending=True;self._audio_request_pending=True
         self._latency['audio_followups']+=1
-        self._send(dict(type='response.create',response=dict(modalities=['audio','text'])))
+        try:self._send(dict(type='response.create',response=dict(modalities=['audio','text'])))
+        except Exception:
+            self._audio_request_pending=False;self._generating=False
+            raise
 
     def _screen_state(self):
         if not callable(self.screen_context_provider):return dict(active=False,connected=False)
@@ -193,7 +198,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         # whole instructions+tools blob while the model is generating or the
         # user is talking; a server-side rate error used to end the whole call.
         if not force and now-self._screen_last_sent_at<2:return
-        if not force and (self._generating or self._user_speaking):return
+        if not force and (self._generating or self._audio_request_pending or self._user_speaking):return
         # Replace session instructions; never append fake user messages or request speech.
         settings=self._session_settings()
         self._send(dict(type='session.update',session=dict(instructions=settings['instructions'])))
@@ -405,6 +410,7 @@ class AgentRealtimeVoice(RealtimeVoice):
             _,text=command
             self._input_epoch+=1
             self._input_text=text
+            if self._audio_request_pending:self._cancel_on_created=True
             if self._response_id:self._send(dict(type='response.cancel',response_id=self._response_id))
             self._cancel_audio();self._last_activity=time.monotonic();self._proactive_notices.clear()
             fast=match_fast_command(text)
@@ -414,7 +420,7 @@ class AgentRealtimeVoice(RealtimeVoice):
                 self._followup_ready=False
                 return
             self._pending_user_text=text
-        if self._pending_user_text is not None and not self._response_id and not self._user_speaking:
+        if self._pending_user_text is not None and not self._response_id and not self._audio_request_pending and not self._user_speaking:
             text=self._pending_user_text;self._pending_user_text=None
             self._followup_ready=False
             self._send(dict(type='conversation.item.create',item=dict(type='message',role='user',
@@ -560,6 +566,9 @@ class AgentRealtimeVoice(RealtimeVoice):
 
     def _handle_event(self, event):
         kind = event.get('type')
+        cancel_created=kind=='response.created' and self._cancel_on_created
+        if kind=='response.created':
+            self._audio_request_pending=False;self._cancel_on_created=False
         if kind=='session.updated':
             if self._screen_configured:self._screen_updates_acked+=1
             self._screen_configured=True
@@ -645,6 +654,9 @@ class AgentRealtimeVoice(RealtimeVoice):
                     if item.get('type') == 'function_call':
                         self._accept_call(item, response_id)
         super()._handle_event(event)
+        if cancel_created and self._response_id:
+            self._cancel_audio()
+            self._send(dict(type='response.cancel',response_id=self._response_id))
         if kind=='conversation.item.input_audio_transcription.completed':self._flush_pending_requests()
         if kind == 'response.done' and response_id in self._notice_responses:
             self._notice_active = False
@@ -667,6 +679,7 @@ class AgentRealtimeVoice(RealtimeVoice):
 
     def _connection(self):
         self._screen_configured=False;self._screen_signature=None
+        self._audio_request_pending=False;self._cancel_on_created=False
         try:
             super()._connection()
         finally:
@@ -674,4 +687,5 @@ class AgentRealtimeVoice(RealtimeVoice):
             # answers as notices, but never replay function outputs or actions.
             self._invalidate_tasks()
             self._pending_user_text=None
+            self._audio_request_pending=False;self._cancel_on_created=False
             self._input_text=None

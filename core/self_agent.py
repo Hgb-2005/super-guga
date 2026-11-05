@@ -34,7 +34,7 @@ def screen_observation_instructions(observation):
             '\n观察规则：动作前必须引用 observation_id 或先重新观察；usable=false、画面过期或前台不匹配时不得直接点击/输入。'
             '每次点击、输入、滚动或切换窗口后，旧 observation_id 的坐标作废，必须重新观察并核对目标变化后才能继续。')
 
-HARNESS_VERSION='2026-11-04.browser-response.1'
+HARNESS_VERSION='2026-11-05.command-session.1'
 
 
 PERSONA = '''你是咕嘎，一只调皮、可靠的小企鹅，也是这个桌宠软件内置的智能体。

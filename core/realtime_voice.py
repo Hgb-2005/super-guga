@@ -34,7 +34,7 @@ def voice_event(kind, **fields):
     try:
         VOICE_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
         path = VOICE_EVENTS_DIR / ('voice-events-' + time.strftime('%Y%m%d') + '.jsonl')
-        payload = dict(at=time.strftime('%Y-%m-%d %H:%M:%S'), kind=kind,
+        payload = dict(at=time.strftime('%Y-%m-%d %H:%M:%S'), kind=kind,pid=os.getpid(),
                        **{k: v for k, v in fields.items() if v is not None})
         with path.open('a', encoding='utf-8') as fh:
             fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
@@ -478,6 +478,7 @@ class RealtimeVoice(QObject):
         code = str(error.get('code') or error.get('type') or 'unknown')
         lower = code.lower()
         if 'freetieronly' in lower:
+            voice_event('server_error',code=code[:100],fatal=True)
             raise ValueError('免费额度已用尽或到期，已停止；不会切换模型或重试付费调用')
         fatal = any(word in lower for word in ('auth', 'permission', 'invalid_api_key',
                     'quota', 'model_not_found', 'invalid_parameter', 'bad_request'))
@@ -499,6 +500,11 @@ class RealtimeVoice(QObject):
 
     def _handle_event(self, event):
         kind = event.get('type')
+        # Qianwen can return a top-level code/message envelope, including
+        # FreeTierOnly, then close the socket. It is not a transient EOF.
+        if not kind and event.get('code'):
+            self._handle_platform_error(event)
+            return
         response_id = event.get('response_id') or event.get('response', {}).get('id')
         # Account for cancelled responses too, if the server supplies counters.
         if kind == 'response.done':
@@ -616,7 +622,7 @@ class RealtimeVoice(QObject):
                     self._handle_event(event)
                     configured = True
                     break
-                elif event.get('type') == 'error':
+                elif event.get('type') == 'error' or (not event.get('type') and event.get('code')):
                     self._handle_event(event)
             if not configured:
                 if self._stop.is_set():

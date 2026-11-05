@@ -60,6 +60,8 @@ def main():
     parser.add_argument('--open-browser', action='store_true', help='actually launch the one website requested by synthetic speech')
     parser.add_argument('--static-context', action='store_true', help='diagnostic: skip mid-session context updates')
     parser.add_argument('--direct', action='store_true', help='diagnostic: connect to configured provider without environment proxy')
+    parser.add_argument('--changing-context', action='store_true', help='exercise changing synthetic screen facts every three seconds')
+    parser.add_argument('--proactive', action='store_true', help='exercise periodic proactive speech alongside user turns')
     args = parser.parse_args()
     if not args.live:
         parser.error('--live required; uses the configured confirmed free quota')
@@ -80,8 +82,9 @@ def main():
         SilentStream.source = np.interp(np.arange(0,len(samples),1.5), np.arange(len(samples)), samples).astype('<i2').tobytes()
     voice = AgentRealtimeVoice()
     if args.static_context:voice._sync_screen_context=lambda *a,**kw:None
+    context_started=time.monotonic()
     voice.screen_context_provider = lambda: dict(active=True, fresh=True,
-        context='合成测试画面：左侧蓝圆、右侧黄方。', sequence=1)
+        context='合成测试画面：左侧蓝圆、右侧黄方。'+('测试状态'+str(int((time.monotonic()-context_started)//3)) if args.changing_context else ''), sequence=1)
     voice.set_task_context(dict(running=True, kind='controlled_wait', goal='受控等待', summary='后台仍在等待'))
     result = dict(label=args.label, connected_count=0, drops=0, responses=0,
                   audio_bytes=0, errors=[], events={}, first_audio_ms=[], fast_commands=[],
@@ -110,7 +113,7 @@ def main():
         if kind == 'input_audio_buffer.speech_stopped':result['speech_stopped'] += 1
         if kind == 'error':
             error = event.get('error') or {}
-            result['errors'].append(dict(code=error.get('code'), type=error.get('type')))
+            result['errors'].append(dict(code=error.get('code'), type=error.get('type'),param=error.get('param')))
         original(event)
     voice._handle_event = handle
     def connection(value):
@@ -139,6 +142,7 @@ def main():
     turns = ['请只回答收到两个字。', '画面里左边是什么颜色？请用一句话回答。',
              '请帮我打开 GitHub 官网。', '后台任务还在执行吗？请简短回答。']
     submitted = 0
+    proactive_sent=0
     if args.audio_command:turns=[]
     try:
         import websocket
@@ -152,6 +156,9 @@ def main():
             while time.monotonic()-started < args.seconds:
                 app.processEvents()
                 elapsed = time.monotonic()-started
+                if args.proactive and voice.connected and elapsed>=10*(proactive_sent+1):
+                    voice.notify_proactive('probe-'+str(proactive_sent),'只说“本鹅还在”，不调用工具。')
+                    proactive_sent+=1
                 if args.audio_command and voice.connected and elapsed>=2:SilentStream.feed.set()
                 if (voice.connected and submitted < len(turns) and elapsed >= 3+submitted*7
                         and not voice._generating and not voice._playing):
