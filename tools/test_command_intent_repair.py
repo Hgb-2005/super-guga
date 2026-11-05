@@ -57,6 +57,38 @@ class CommandIntentTests(unittest.TestCase):
 
 
 class PendingVoiceResponseTests(unittest.TestCase):
+    def test_invalid_semantic_turn_releases_native_wait(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=AgentRealtimeVoice()
+        with patch.object(voice,'_send') as send:
+            voice._handle_event(dict(type='input_audio_buffer.speech_started'))
+            voice._handle_event(dict(type='input_audio_buffer.speech_stopped',reason='turn_invalid'))
+            voice._request_audio_response()
+        self.assertEqual(sum(c.args[0]['type']=='response.create' for c in send.call_args_list),1)
+
+    def test_native_vad_gap_does_not_allow_another_response_create(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=AgentRealtimeVoice()
+        with patch.object(voice,'_send') as send:
+            voice._handle_event(dict(type='input_audio_buffer.speech_started',item_id='speech-1'))
+            voice._handle_event(dict(type='input_audio_buffer.speech_stopped',item_id='speech-1'))
+            voice._request_audio_response()
+            self.assertFalse(any(c.args[0]['type']=='response.create' for c in send.call_args_list))
+            voice._handle_event(dict(type='response.created',response=dict(id='native-1')))
+            voice._handle_event(dict(type='response.done',response=dict(id='native-1',status='completed')))
+            voice._process_command(None)
+            self.assertEqual(sum(c.args[0]['type']=='response.create' for c in send.call_args_list),1)
+
+    def test_native_vad_gap_does_not_push_session_configuration(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=AgentRealtimeVoice();voice._ws=object();voice._screen_configured=True
+        voice.screen_context_provider=lambda:dict(active=True,fresh=True,context='测试画面')
+        with patch.object(voice,'_send') as send:
+            voice._handle_event(dict(type='input_audio_buffer.speech_started'))
+            voice._handle_event(dict(type='input_audio_buffer.speech_stopped'))
+            voice._sync_screen_context()
+        send.assert_not_called()
+
     def test_late_old_done_does_not_release_a_new_unacknowledged_create(self):
         from core.realtime_agent import AgentRealtimeVoice
         voice=AgentRealtimeVoice()

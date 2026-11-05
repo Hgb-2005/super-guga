@@ -10,7 +10,7 @@ from PyQt5.QtCore import pyqtSignal
 from core.realtime_voice import RealtimeVoice, session_settings
 from core.fast_commands import match as match_fast_command, command_key, command_text
 
-ROUTER_VERSION='2026-11-05.command-session.2'
+ROUTER_VERSION='2026-11-05.voice-session-owner.1'
 SCREEN_CONTEXT_MIN_INTERVAL=10
 
 
@@ -108,6 +108,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._pending_user_text = None
         self._audio_request_pending=False
         self._cancel_on_created=False
+        self._vad_turn_pending=False
         self._speech_stopped_at=None
         self._last_asr_delay_ms=None
         self._input_text=None
@@ -132,7 +133,7 @@ class AgentRealtimeVoice(RealtimeVoice):
             generating=self._generating,playing=self._playing,task_running=self._task_context.get('running',False))
 
     def _request_audio_response(self):
-        if self._generating or self._response_id or self._audio_request_pending or self._user_speaking:
+        if self._generating or self._response_id or self._audio_request_pending or self._vad_turn_pending or self._user_speaking:
             self._followup_ready=True
             return
         self._generating=True;self._first_audio_pending=True;self._audio_request_pending=True
@@ -200,7 +201,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         # capture FPS, and at most one update may await acknowledgment.
         if not force and now-self._screen_last_sent_at<SCREEN_CONTEXT_MIN_INTERVAL:return
         if not force and self._screen_updates_sent>self._screen_updates_acked:return
-        if not force and (self._generating or self._audio_request_pending or self._user_speaking or self._playing or bool(self._pcm)):return
+        if not force and (self._generating or self._audio_request_pending or self._vad_turn_pending or self._user_speaking or self._playing or bool(self._pcm)):return
         # Replace session instructions; never append fake user messages or request speech.
         settings=self._session_settings()
         self._send(dict(type='session.update',session=dict(instructions=settings['instructions'])))
@@ -422,7 +423,7 @@ class AgentRealtimeVoice(RealtimeVoice):
                 self._followup_ready=False
                 return
             self._pending_user_text=text
-        if self._pending_user_text is not None and not self._response_id and not self._audio_request_pending and not self._user_speaking:
+        if self._pending_user_text is not None and not self._response_id and not self._audio_request_pending and not self._vad_turn_pending and not self._user_speaking:
             text=self._pending_user_text;self._pending_user_text=None
             self._followup_ready=False
             self._send(dict(type='conversation.item.create',item=dict(type='message',role='user',
@@ -474,14 +475,14 @@ class AgentRealtimeVoice(RealtimeVoice):
                 self._request_audio_response()
             while self._notices and time.monotonic()-self._notices[0][1] > 90:
                 self._notices.popleft()
-            if (self._notices and (not self._tasks or self._notices[0][2]) and not self._generating and not self._response_id and not self._playing
+            if (self._notices and (not self._tasks or self._notices[0][2]) and not self._generating and not self._response_id and not self._audio_request_pending and not self._vad_turn_pending and not self._playing
                     and not self._user_speaking and time.monotonic()-self._last_activity >= (.05 if len(self._notices[0])>4 and self._notices[0][4] else 1.5)):
                 speech = self._notices.popleft()[0]
                 self._notice_active = True
                 self._send(dict(type='conversation.item.create',item=dict(type='message',role='user',
                     content=[dict(type='input_text',text='【任务反馈，仅播报】'+speech)])))
                 self._request_audio_response()
-            if (self._proactive_notices and not self._tasks and not self._generating and not self._response_id and not self._playing
+            if (self._proactive_notices and not self._tasks and not self._generating and not self._response_id and not self._audio_request_pending and not self._vad_turn_pending and not self._playing
                     and not self._user_speaking and time.monotonic()-self._last_activity>=1.5):
                 prompt,_,profile=self._proactive_notices.popleft()
                 self._notice_active=True
@@ -571,6 +572,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         cancel_created=kind=='response.created' and self._cancel_on_created
         if kind=='response.created':
             self._audio_request_pending=False;self._cancel_on_created=False
+            self._vad_turn_pending=False
         if kind=='session.updated':
             if self._screen_configured:self._screen_updates_acked+=1
             self._screen_configured=True
@@ -581,6 +583,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         if kind=='response.created':self._first_audio_pending=True
         response_id = event.get('response_id') or event.get('response', {}).get('id')
         if kind=='input_audio_buffer.speech_started':
+            self._vad_turn_pending=True
             self._input_epoch+=1
             self._pending_user_text=None
             self._speech_stopped_at=None;self._last_asr_delay_ms=None
@@ -589,6 +592,7 @@ class AgentRealtimeVoice(RealtimeVoice):
             self._proactive_notices.clear()
         elif kind=='input_audio_buffer.speech_stopped':
             self._speech_stopped_at=time.monotonic()
+            if event.get('reason')=='turn_invalid':self._vad_turn_pending=False
         if kind == 'conversation.item.input_audio_transcription.completed':
             self._last_asr_delay_ms=(round((time.monotonic()-self._speech_stopped_at)*1000,2)
                 if self._speech_stopped_at is not None else None)
@@ -684,6 +688,7 @@ class AgentRealtimeVoice(RealtimeVoice):
         self._screen_updates_sent=0;self._screen_updates_acked=0
         self._screen_checked_at=0;self._screen_last_sent_at=0
         self._audio_request_pending=False;self._cancel_on_created=False
+        self._vad_turn_pending=False
         try:
             super()._connection()
         finally:
@@ -692,4 +697,5 @@ class AgentRealtimeVoice(RealtimeVoice):
             self._invalidate_tasks()
             self._pending_user_text=None
             self._audio_request_pending=False;self._cancel_on_created=False
+            self._vad_turn_pending=False
             self._input_text=None

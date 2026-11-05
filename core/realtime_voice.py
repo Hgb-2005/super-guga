@@ -24,6 +24,7 @@ USAGE_PATH = CONFIG_PATH.with_name('realtime_usage.log')
 # Lifecycle diagnostics only: connection/reconnect/error reasons and counters.
 # Never audio, transcripts, keys, prompts or headers.
 VOICE_EVENTS_DIR = CONFIG_PATH.parent / 'runtime' / 'voice'
+_VOICE_EVENTS_LOCK=threading.Lock()
 
 
 class RecoverableVoiceError(ConnectionError):
@@ -33,11 +34,12 @@ class RecoverableVoiceError(ConnectionError):
 def voice_event(kind, **fields):
     try:
         VOICE_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = VOICE_EVENTS_DIR / ('voice-events-' + time.strftime('%Y%m%d') + '.jsonl')
+        path = VOICE_EVENTS_DIR / ('voice-events-' + time.strftime('%Y%m%d') + '-'+str(os.getpid())+'.jsonl')
         payload = dict(at=time.strftime('%Y-%m-%d %H:%M:%S'), kind=kind,pid=os.getpid(),
                        **{k: v for k, v in fields.items() if v is not None})
-        with path.open('a', encoding='utf-8') as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        with _VOICE_EVENTS_LOCK:
+            with path.open('a', encoding='utf-8') as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
     except OSError:
         pass
 
@@ -241,6 +243,8 @@ class RealtimeVoice(QObject):
         self._last_disconnect_reason = ''
         self._response_audio = set()
         self._response_text = {}
+        self._connection_seq=0
+        self._last_ping=0.0
 
     @property
     def active(self):
@@ -423,34 +427,39 @@ class RealtimeVoice(QObject):
             else:
                 self._set_playing(False)
 
-    def _sender(self, ended, errors):
-        last_ping = time.monotonic()
+    def _pump_outgoing(self):
+        """The receiving worker also owns all protocol state and outgoing writes.
+
+        Audio callbacks and Qt only enqueue. No sender from an old connection
+        can wake up later and shut down or write into its replacement socket.
+        """
+        now=time.monotonic()
+        if now-self._last_ping>=10:
+            with self._send_lock:
+                if self._ws and callable(getattr(self._ws,'ping',None)):self._ws.ping()
+            self._last_ping=now
+        for _ in range(12):
+            try:command=self._commands.get_nowait()
+            except queue.Empty:break
+            if command=='interrupt' and self._response_id:
+                self._send(dict(type='response.cancel',response_id=self._response_id))
+            else:self._process_command(command)
+        self._process_command(None)
+        for _ in range(4):
+            try:raw=self._input.get_nowait()
+            except queue.Empty:break
+            self._send(dict(type='input_audio_buffer.append',audio=base64.b64encode(raw).decode('ascii')))
+
+    @staticmethod
+    def _readable(ws):
+        sock=getattr(ws,'sock',None)
+        if sock is None:return True  # test adapters without a native socket
+        if getattr(getattr(ws,'frame_buffer',None),'recv_buffer',None):return True
+        import select
         try:
-            while not self._stop.is_set() and not ended.is_set():
-                if time.monotonic()-last_ping >= 10:
-                    with self._send_lock:
-                        if self._ws and callable(getattr(self._ws, 'ping', None)):
-                            self._ws.ping()
-                    last_ping = time.monotonic()
-                for _ in range(12):
-                    try:command = self._commands.get_nowait()
-                    except queue.Empty:break
-                    if command == 'interrupt' and self._response_id:
-                        self._send(dict(type='response.cancel', response_id=self._response_id))
-                    else:self._process_command(command)
-                self._process_command(None)
-                try:
-                    raw = self._input.get(timeout=0.02)
-                except queue.Empty:
-                    continue
-                self._send(dict(type='input_audio_buffer.append', audio=base64.b64encode(raw).decode('ascii')))
-        except Exception as exc:
-            errors.append(exc)
-            ended.set()
-            try:
-                self._ws.shutdown()
-            except Exception:
-                pass
+            if callable(getattr(sock,'pending',None)) and sock.pending():return True
+            return bool(select.select([sock],[],[],.02)[0])
+        except (OSError,ValueError):return True  # recv reports the actual close
 
     def _process_command(self, command):
         """Extension point for worker-owned commands (never block audio callbacks)."""
@@ -490,7 +499,7 @@ class RealtimeVoice(QObject):
                       or code == 'invalid_request_error')
         if turn_error and not fatal:
             if not self._response_id:self._generating=False
-            voice_event('turn_command_rejected', code=code[:100])
+            voice_event('turn_command_rejected', code=code[:100],param=str(error.get('param') or '')[:80])
             self.status.emit('本轮语音指令未受理，通话保持连接，可以继续说话')
             return
         voice_event('server_error', code=code[:100], fatal=fatal)
@@ -606,6 +615,8 @@ class RealtimeVoice(QObject):
         ws = websocket.create_connection(connection_url(self._cfg),
                                          header=['Authorization: Bearer ' + self._cfg['api_key'].strip()], timeout=12)
         self._ws = ws
+        self._connection_seq+=1
+        phase='handshake';opened=time.monotonic();self._last_disconnect_reason=''
         try:
             if self._stop.is_set():
                 return
@@ -633,14 +644,12 @@ class RealtimeVoice(QObject):
             self._generating = self._suppress = False
             self._response_id = None
             ws.settimeout(1)
-            ended = threading.Event()
-            errors = []
+            phase='audio_devices'
             with sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', blocksize=960,
                                     device=self._cfg.get('output_device'), callback=self._playback):
                 with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=640,
                                        device=self._cfg.get('input_device'), callback=self._capture):
-                    sender = threading.Thread(target=self._sender, args=(ended, errors), daemon=True)
-                    sender.start()
+                    self._last_ping=time.monotonic()
                     opened = time.monotonic()
                     self._last_activity = opened
                     self._set_connected(True)
@@ -648,7 +657,7 @@ class RealtimeVoice(QObject):
                     voice_event('connected', model=self._cfg.get('model'))
                     self.status.emit('持续通话中 · 可以直接说话')
                     try:
-                        while not self._stop.is_set() and not ended.is_set():
+                        while not self._stop.is_set():
                             now = time.monotonic()
                             expiry = call_expiry_reason(self._cfg, now, self._call_started, self._last_activity)
                             if expiry == 'max':
@@ -659,24 +668,27 @@ class RealtimeVoice(QObject):
                                 self.status.emit('长时间没有说话，已自动结束通话')
                                 self._stop.set()
                                 break
-                            if now - opened >= 110 * 60 and not (self._generating or self._playing):
-                                self.status.emit('正在续接会话，保留近期文字上下文…')
-                                break
                             try:
+                                phase='send'
+                                self._pump_outgoing()
+                                phase='receive'
+                                if not self._readable(ws):continue
                                 message = self._recv_message(ws)
                                 if message is None:continue
                                 if not message:
                                     raise ConnectionError('连接已关闭')
                                 self._handle_event(json.loads(message))
                             except websocket.WebSocketTimeoutException:
+                                if phase=='send':raise
                                 continue
                     finally:
-                        ended.set()
                         ws.shutdown()
-                        sender.join(timeout=2)
-                    if errors and not self._stop.is_set():
-                        voice_event('sender_error', error=type(errors[0]).__name__)
-                        raise errors[0]
+        except Exception as exc:
+            if not self._stop.is_set():
+                self._last_disconnect_reason=self._last_disconnect_reason or type(exc).__name__
+                voice_event('connection_failure',connection=self._connection_seq,phase=phase,error=type(exc).__name__,
+                    errno=getattr(exc,'errno',None),uptime_seconds=round(time.monotonic()-opened,2))
+            raise
         finally:
             self._set_connected(False, self._last_disconnect_reason or 'connection_end')
             voice_event('disconnect', reason=self._last_disconnect_reason or 'connection_end')
@@ -726,7 +738,7 @@ class RealtimeVoice(QObject):
                     if time.monotonic() - opened > 60:
                         attempts = 0
                     attempts += 1
-                    self._last_disconnect_reason = type(exc).__name__
+                    self._last_disconnect_reason = self._last_disconnect_reason or type(exc).__name__
                     voice_event('connection_error', error=type(exc).__name__, attempts=attempts)
                 if self._stop.is_set():
                     break

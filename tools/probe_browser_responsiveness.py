@@ -18,7 +18,7 @@ import time
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 
-def voice_round(page,interaction):
+def voice_round(page,interaction,hwnd):
     from launcher import _prepare_qt
     _prepare_qt()
     from PyQt5.QtWidgets import QApplication
@@ -40,7 +40,9 @@ def voice_round(page,interaction):
     def fast(command):
         if command.get('action')!='browser_step':errors.append('unexpected command');return
         def run():
-            result=interaction.execute(command)
+            # Never let a fixture probe act on another browser if foreground
+            # focus changes during cloud synthesis or the spoken turn.
+            result=interaction.execute(command,hwnd=hwnd)
             measurements.append(dict(action=command['browser_action'],ok=result['ok'],
                 asr_after_speech_ms=command.get('asr_after_speech_ms'),
                 transcript_to_result_ms=round((time.monotonic()-command['recognized_at'])*1000,2),error=result.get('error')))
@@ -50,7 +52,20 @@ def voice_round(page,interaction):
     voice.task_requested.connect(lambda ident,text:(delegations.append(ident),voice.resolve_task(ident,dict(ok=False,error='probe permits only local single steps'))))
     voice.failed.connect(errors.append)
     voice.connected_changed.connect(lambda value:drops.append(True) if not value and not voice._stop.is_set() else None)
+    page.bring_to_front()
+    from core.computer_control import ComputerControl
+    from core.fast_commands import match
+    from types import SimpleNamespace
+    ComputerControl(SimpleNamespace(enabled=True)).execute(dict(action='focus',hwnd=hwnd))
     page.locator('#qa-input').click()
+    try:
+        focus=interaction.uia.focused(hwnd)['element']
+        cdp_input_focused=focus.get('name')=='验收输入' and focus.get('type')=='Edit'
+    except RuntimeError:cdp_input_focused=False
+    # Native UIA establishes the focus used by the real spoken "input" step;
+    # a CDP page click alone does not prove native keyboard focus on Windows.
+    focus_receipt=interaction.execute(match('点击输入框'),hwnd=hwnd)
+    if not focus_receipt.get('ok'):raise RuntimeError('Fixture input did not acquire native UIA focus')
     before=page.evaluate('window.clicks || 0')
     started=time.monotonic()
     with patch('sounddevice.RawInputStream',SilentStream),patch('sounddevice.RawOutputStream',SilentStream):
@@ -70,6 +85,7 @@ def voice_round(page,interaction):
         and not drops and connected and '界面' in actual and clicks==before+1 and not voice.active),
         measurements=measurements,delegations=len(delegations),drops=len(drops),errors=errors,
         input_verified='界面' in actual,click_verified=clicks==before+1,worker_stopped=not voice.active,
+        cdp_input_focused=cdp_input_focused,native_focus_verified=True,fixture_window_guard=True,
         seconds=round(time.monotonic()-started,2),microphone=False,speaker=False)
 
 
@@ -153,7 +169,7 @@ def main():
                         result['checks'].append(page.input_value('#qa-input')=='语音原子指令验收')
                         result['checks'].append(page.evaluate('window.clicks')==2)
                         if args.live_voice:
-                            result['voice']=voice_round(page,interaction)
+                            result['voice']=voice_round(page,interaction,hwnd)
                             result['checks'].append(result['voice']['ok'])
                         interaction.close()
                 finally:browser.close()

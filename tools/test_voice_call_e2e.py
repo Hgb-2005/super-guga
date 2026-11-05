@@ -79,6 +79,59 @@ def wait_until(predicate, timeout=8.0, interval=0.02):
 
 
 class VoiceCallEndToEndTests(unittest.TestCase):
+    def test_send_timeout_is_not_swallowed_as_receive_idle(self):
+        engine=RealtimeVoice();engine._cfg=CFG;engine._call_started=time.monotonic();socket=FakeSocket();calls=[]
+        def outgoing():
+            calls.append(True)
+            if len(calls)==1:raise websocket.WebSocketTimeoutException('send blocked')
+            engine.stop()
+        with patch('websocket.create_connection',return_value=socket),patch('sounddevice.RawInputStream',Stream), \
+             patch('sounddevice.RawOutputStream',Stream),patch.object(engine,'_pump_outgoing',side_effect=outgoing):
+            with self.assertRaises(websocket.WebSocketTimeoutException):engine._connection()
+        self.assertEqual(len(calls),1)
+
+    def test_unlimited_call_does_not_proactively_reconnect_after_110_minutes(self):
+        engine=RealtimeVoice();engine._cfg=dict(CFG,max_call_minutes=0,idle_minutes=0)
+        clock=[100.0];engine._call_started=100.0;socket=FakeSocket();reads=[];original_recv=socket.recv
+        def receive():
+            if not socket.events:
+                reads.append(True);engine.stop();raise websocket.WebSocketTimeoutException()
+            return original_recv()
+        socket.recv=receive;original_connected=engine._set_connected
+        def connected(value,reason=''):
+            original_connected(value,reason)
+            if value:clock[0]=7300.0
+        with patch.object(engine,'_set_connected',side_effect=connected),patch('time.monotonic',side_effect=lambda:clock[0]), \
+             patch('websocket.create_connection',return_value=socket),patch('sounddevice.RawInputStream',Stream),patch('sounddevice.RawOutputStream',Stream):
+            engine._connection()
+        self.assertEqual(reads,[True],'unlimited call must keep receiving rather than close at 110 minutes')
+
+    def test_one_worker_owns_protocol_before_and_after_reconnect(self):
+        engine=RealtimeVoice();created=[];owners=[]
+        for socket in self.sockets:
+            original_send=socket.send;original_recv=socket.recv
+            def send(value,original=original_send):
+                owners.append(threading.current_thread().name);return original(value)
+            def recv(original=original_recv):
+                owners.append(threading.current_thread().name);return original()
+            socket.send=send;socket.recv=recv
+        def connect(*args,**kwargs):
+            socket=self.sockets[len(created)];created.append(socket);return socket
+        with patch('websocket.create_connection',side_effect=connect),patch('sounddevice.RawInputStream',Stream),patch('sounddevice.RawOutputStream',Stream):
+            try:
+                engine.start(CFG);self.assertTrue(wait_until(lambda:engine.connected))
+                self.sockets[0].drop_after_events=True
+                self.assertTrue(wait_until(lambda:len(created)==2 and engine.connected))
+            finally:
+                engine.stop();self.assertTrue(wait_until(lambda:not engine.active))
+        self.assertEqual(set(owners),{'guga-realtime'})
+
+    def test_buffered_websocket_frame_is_read_without_waiting_for_new_socket_data(self):
+        from types import SimpleNamespace
+        socket=SimpleNamespace(sock=object(),frame_buffer=SimpleNamespace(recv_buffer=[b'buffered frame']))
+        with patch('select.select',side_effect=AssertionError('already buffered')):
+            self.assertTrue(RealtimeVoice._readable(socket))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.patches = [
