@@ -38,6 +38,13 @@ class VoiceSettingsDialog(QDialog):
         self.provider.addItem('阿里云百炼', 'bailian')
         self.provider.setCurrentIndex(max(0, self.provider.findData(cfg.get('provider', 'qianwen'))))
         form.addRow('API 平台', self.provider)
+        # The two platforms sell the same model names but are separate gateways
+        # with separate accounts. Show the gateway that will actually be dialled so
+        # "right model + right key" can never hide a wrong platform choice.
+        self.endpoint = QLabel()
+        self.endpoint.setWordWrap(True)
+        self.endpoint.setStyleSheet('color:#5a6b7a;')
+        form.addRow('实际连接', self.endpoint)
         self.key = QLineEdit(cfg.get('api_key', ''))
         self.key.setEchoMode(QLineEdit.Password)
         self.key.setPlaceholderText('所选平台的 API Key；也可用 DASHSCOPE_API_KEY 环境变量')
@@ -126,12 +133,16 @@ class VoiceSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.provider.currentIndexChanged.connect(self._provider_changed)
+        self.workspace.textChanged.connect(lambda _text: self._update_provider_fields())
         self._update_provider_fields()
 
     def _provider_changed(self):
         self.free_guard.setChecked(False)
         # A key from one platform must never be sent to another by switching UI.
         self.key.clear()
+        # The workspace id is a 百炼-only identifier; keeping it across a switch is
+        # how a "qianwen key + bailian workspace" hybrid config gets saved.
+        self.workspace.clear()
         self._update_provider_fields()
 
     def _update_provider_fields(self):
@@ -140,12 +151,21 @@ class VoiceSettingsDialog(QDialog):
             field.setVisible(bailian)
         if bailian:
             self.link.setText('<a href="https://bailian.console.aliyun.com/">百炼控制台</a>')
+            workspace = self.workspace.text().strip()
+            region = self.region.currentData() or 'cn-beijing'
+            host = (workspace + '.' + str(region) + '.maas.aliyuncs.com') if workspace else '需先填写业务空间 ID'
+            self.endpoint.setText('wss://' + host + '  ·  阿里云百炼（用百炼的 Key，额度和账号在百炼控制台）')
         else:
             self.link.setText('<a href="https://platform.qianwenai.com/">千问 AI 平台</a> · '
                               '<a href="https://platform.qianwenai.com/docs/resources/free-quota">免费额度说明</a>')
+            self.endpoint.setText('wss://maas.qianwenaiapi.com  ·  千问 AI 平台（只需 Key，不需要业务空间）')
 
     def _save(self):
-        cfg = dict(DEFAULTS, provider=self.provider.currentData(), api_key=self.key.text().strip(), workspace_id=self.workspace.text().strip(),
+        provider = self.provider.currentData()
+        # 千问 never uses a workspace id; a leftover one would only mislead the
+        # next person reading ai_config.json.
+        workspace = self.workspace.text().strip() if provider == 'bailian' else ''
+        cfg = dict(DEFAULTS, provider=provider, api_key=self.key.text().strip(), workspace_id=workspace,
                    region=self.region.currentData(), model=self.model.currentText(),
                    voice=self.voice.currentText().strip(), headphones=self.headphones.isChecked(),
                    silence_duration_ms=self.silence.value(),turn_mode=self.turn_mode.currentData(), max_call_minutes=self.duration.value(),

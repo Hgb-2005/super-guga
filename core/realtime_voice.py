@@ -572,8 +572,12 @@ class RealtimeVoice(QObject):
             return
         voice_event('server_error', code=code[:100], param=param, detail=detail, fatal=fatal)
         if fatal:
+            hint = ''
+            if 'invalid_parameter' in lower:
+                hint = ('；如果这里填的是千问 AI 平台的 Key，请把平台改回「千问 AI 平台」——'
+                        '两个平台的 Key、网关和额度都不通用，模型同名不代表能混用')
             raise ValueError('语音平台返回错误：' + code + ('（'+(param+'：' if param else '')+detail[:120]+'）' if detail else '') +
-                             '；请核对模型权限、额度和配置')
+                             '；请核对模型权限、额度和配置' + hint)
         raise RecoverableVoiceError('可恢复的语音平台错误：' + code)
 
     def _handle_event(self, event):

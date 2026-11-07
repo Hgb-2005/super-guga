@@ -115,17 +115,28 @@ class VoiceTests(unittest.TestCase):
     def test_qianwen_settings_hide_workspace_and_clear_key_on_platform_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'ai_config.json'
-            cfg = dict(CFG, provider='qianwen', workspace_id='', free_quota_confirmed_provider='qianwen')
+            cfg = dict(CFG, provider='qianwen', workspace_id='leftover-space', free_quota_confirmed_provider='qianwen')
             path.write_text(json.dumps({'realtime_voice':cfg}), encoding='utf-8')
             with patch('ui.voice_dialog.CONFIG_PATH', path):
                 dialog = VoiceSettingsDialog()
                 self.assertTrue(dialog.workspace.isHidden())
                 self.assertTrue(dialog.region.isHidden())
+                self.assertIn('maas.qianwenaiapi.com', dialog.endpoint.text())
                 dialog._save()
-                self.assertEqual(json.loads(path.read_text())['realtime_voice']['provider'], 'qianwen')
+                saved = json.loads(path.read_text())['realtime_voice']
+                self.assertEqual(saved['provider'], 'qianwen')
+                # 千问 never dials a workspace host, so a leftover id must not survive.
+                self.assertEqual(saved['workspace_id'], '')
                 dialog.provider.setCurrentIndex(1)
                 self.assertEqual(dialog.key.text(), '')
                 self.assertFalse(dialog.free_guard.isChecked())
+                self.assertEqual(dialog.workspace.text(), '')
+                self.assertIn('业务空间 ID', dialog.endpoint.text())
+                dialog.workspace.setText('test-space')
+                self.assertIn('test-space.cn-beijing.maas.aliyuncs.com', dialog.endpoint.text())
+                dialog.provider.setCurrentIndex(0)
+                self.assertEqual(dialog.workspace.text(), '')
+                self.assertIn('maas.qianwenaiapi.com', dialog.endpoint.text())
                 dialog.deleteLater()
 
     def test_bounded_pcm_drops_stale_audio_and_zero_pads(self):
