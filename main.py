@@ -14,8 +14,29 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt, QTimer
 from ui.pet_window import PetWindow
 
+_INSTANCE_MUTEX = None
+
+
+def _single_instance():
+    """Prevent duplicate pets from stacking timers, captures and AI workers."""
+    global _INSTANCE_MUTEX
+    if os.name != 'nt':
+        return True
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    _INSTANCE_MUTEX = kernel32.CreateMutexW(None, False, 'Local\\GugaPenguinPet.SingleInstance')
+    if not _INSTANCE_MUTEX:
+        return True
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        ctypes.windll.user32.MessageBoxW(None, '咕嘎已经在运行啦，看看桌面右下角的托盘。',
+                                         '咕嘎企鹅桌宠', 0x40)
+        return False
+    return True
+
 
 def main():
+    if not _single_instance():
+        return
     # 高 DPI 支持
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)

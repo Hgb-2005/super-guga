@@ -40,11 +40,11 @@ class ScreenShareController(QObject):
         super().__init__(panel if isinstance(panel,QObject) else None)
         self.panel=panel
         settings=getattr(getattr(panel,'pet',None),'_config',None)
-        configured=settings._s.value('screen/share_fps',2,type=int) if settings else 2
-        self.fps=max(2,min(5,int(configured)))
+        configured=settings._s.value('screen/share_fps',1,type=int) if settings else 1
+        self.fps=max(1,min(5,int(configured)))
         self.capture_scope=str(settings._s.value('screen/capture_scope','foreground_window',type=str)) if settings else 'foreground_window'
-        self.analysis_interval=max(2.0,float(settings._s.value('screen/context_seconds',2.5,type=float))) if settings else 2.5
-        self.max_calls_per_minute=max(1,min(30,int(settings._s.value('screen/max_analyses_per_minute',6,type=int)))) if settings else 6
+        self.analysis_interval=max(5.0,float(settings._s.value('screen/context_seconds',8.0,type=float))) if settings else 8.0
+        self.max_calls_per_minute=max(1,min(12,int(settings._s.value('screen/max_analyses_per_minute',3,type=int)))) if settings else 3
         self._lock=threading.RLock()
         self._stop=threading.Event();self._thread=None
         self._analysis_active=False;self._last_analysis_request=0.0
@@ -67,7 +67,7 @@ class ScreenShareController(QObject):
 
     def start(self,fps=None,reason='manual'):
         if fps is not None:
-            if type(fps) is not int or not 2<=fps<=5:raise ValueError('共享帧率需要是2到5之间的整数')
+            if type(fps) is not int or not 1<=fps<=5:raise ValueError('共享帧率需要是1到5之间的整数')
             self.fps=fps
         if not DesktopAccess().enabled:raise ValueError('完整访问未开启，不能读取共享屏幕')
         with self._lock:
@@ -220,7 +220,7 @@ class ScreenShareController(QObject):
                 foreground=dict(self._foreground) if self._foreground else None)
 
     def _capture_loop(self,generation):
-        interval=1.0/max(2,min(5,self.fps))
+        interval=1.0/max(1,min(5,self.fps))
         process_cache={}
         while not self._stop.is_set() and generation==self._generation:
             started=time.monotonic()
@@ -231,7 +231,7 @@ class ScreenShareController(QObject):
                     rect=foreground.get('rect') or []
                     if len(rect)==4 and rect[2]-rect[0]>=240 and rect[3]-rect[1]>=180:capture_box=tuple(rect)
                 frame=ImageGrab.grab(bbox=capture_box,all_screens=True).convert('RGB')
-                original=frame.size;frame.thumbnail((1280,800),Image.Resampling.LANCZOS)
+                original=frame.size;frame.thumbnail((1280,800),Image.Resampling.BILINEAR)
                 gray=np.asarray(frame.resize((64,36),Image.Resampling.BILINEAR).convert('L'),dtype=np.int16)
                 with self._lock:
                     if generation!=self._generation or self._stop.is_set():return
@@ -285,20 +285,21 @@ class ScreenShareController(QObject):
     def _analyze(self,uri,generation,foreground=None,sampled_at=None):
         from core.screen_visual import describe_frame
         sampled_at=time.monotonic() if sampled_at is None else sampled_at
-        ocr_result={}
-        def local_ocr():
-            value=self._ocr_fallback(uri);ocr_result.update(value)
-            if value.get('ok'):
-                with self._lock:
-                    if generation!=self._generation:return
-                    self._context=value['text'];self._context_at=time.monotonic();self._analysis_count+=1;self._ocr_count+=1
-                    self._context_foreground=dict(foreground) if foreground else None
-                    self._context_frame_at=sampled_at
-                self.context_ready.emit(dict(text=value['text'],at=self._context_at,sequence=self._seq,fallback='ocr'))
-        ocr_thread=threading.Thread(target=local_ocr,name='guga-screen-ocr',daemon=True);ocr_thread.start()
         try:result=describe_frame(uri,allow_primary=time.monotonic()>=self._primary_vision_backoff_until)
         except Exception as exc:result=dict(ok=False,code='vision_exception',error=type(exc).__name__)
-        ocr_thread.join(timeout=.2)
+        ocr_text=''
+        if not result.get('ok'):
+            # OCR is expensive. It is a failure fallback, not a second vision
+            # pipeline running on every sampled frame.
+            fallback=self._ocr_fallback(uri)
+            if fallback.get('ok'):
+                ocr_text=fallback['text']
+                with self._lock:
+                    if generation!=self._generation:return
+                    self._context=ocr_text;self._context_at=time.monotonic();self._analysis_count+=1;self._ocr_count+=1
+                    self._context_foreground=dict(foreground) if foreground else None
+                    self._context_frame_at=sampled_at
+                self.context_ready.emit(dict(text=ocr_text,at=self._context_at,sequence=self._seq,fallback='ocr'))
         with self._lock:
             if generation!=self._generation:return
             self._analysis_active=False

@@ -28,7 +28,7 @@ class LocalPerception:
         with self.lock:
             if self.closed:return
             if key!=self.expected:self.attempted=0.;self.expected=key;self.retry_after=0.;self.consecutive_failures=0
-            if not key[0] or window.get('own_app') or self.busy or now<self.retry_after or now-self.attempted<1.:return
+            if not key[0] or window.get('own_app') or self.busy or now<self.retry_after or now-self.attempted<3.:return
             self.busy=True;self.attempted=now
             def work():
                 try:

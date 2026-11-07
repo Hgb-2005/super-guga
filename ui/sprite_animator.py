@@ -196,8 +196,11 @@ class SpriteAnimator:
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
         self._last_tick=time.monotonic()
+        # Idle breathing/sway has a 4s period, so 10fps is visually identical to
+        # 20fps while halving the transparent-window repaints on an idle desktop.
+        # _tick() clamps dt to 0.12s, so 100ms stays inside the integration budget.
         self._active_interval_ms=33
-        self._idle_interval_ms=50
+        self._idle_interval_ms=100
 
     @property
     def _src(self):
@@ -940,9 +943,15 @@ class SpriteAnimator:
             return
         if max(abs(self.head_yaw),abs(self.head_nod),abs(self.head_tilt))<.001:
             p.drawPixmap(x,y,pm);return
+        width,height=pm.width(),pm.height()
+        # A sub-pixel gaze offset is invisible but the mesh path slices the
+        # sprite into ~125 blits, so skip it until the displacement can be seen.
+        dx=abs(self.head_yaw)*width*.038+abs(self.head_tilt)*height*.034
+        dy=abs(self.head_nod)*height*.017
+        if max(dx,dy)<.75:
+            p.drawPixmap(x,y,pm);return
         # Continuous mesh warp: head moves, deformation fades through the neck,
         # and the lower body remains anchored. Uses the existing transparent art.
-        width,height=pm.width(),pm.height()
         for row in range(0,height,2):
             ratio=row/height
             weight=1.0 if ratio<.39 else max(0,min(1,(.66-ratio)/.27))

@@ -1,18 +1,29 @@
 """Offline tests for long-call persistence and voice conversation controls."""
+import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from core.fast_commands import match
-from core.realtime_voice import call_expiry_reason
+from core.realtime_voice import call_expiry_reason, load_settings
 
 
 class LongCallLifetimeTests(unittest.TestCase):
+    def test_saved_zero_idle_is_migrated_to_thirty_minutes(self):
+        for stored, expected in ((0, 30), (3, 5), (60, 30), (20, 20)):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'ai_config.json'
+                path.write_text(json.dumps({'realtime_voice': {'idle_minutes': stored}}), encoding='utf-8')
+                with patch('core.realtime_voice.CONFIG_PATH', path):
+                    self.assertEqual(load_settings()['idle_minutes'], expected)
+
     def test_zero_means_keep_open_until_user_stops(self):
         cfg = dict(idle_minutes=0, max_call_minutes=0)
         self.assertEqual(call_expiry_reason(cfg, 10_000, 0, 0), '')
@@ -29,7 +40,8 @@ class LongCallLifetimeTests(unittest.TestCase):
 
 class ConversationControlPhraseTests(unittest.TestCase):
     def test_close_phrases_stop_the_long_call(self):
-        for phrase in ('闭嘴', '闭嘴吧', '安静', '安静点', '别说话', '别出声', '不要说话', '结束通话', '别说了'):
+        for phrase in ('闭嘴', '闭嘴吧', '安静', '安静点', '别说话', '别出声', '不要说话', '结束通话', '别说了',
+                       '你可以退下了', '退下吧', '你退下吧', '你可以去休息了', '先聊到这里'):
             parsed = match(phrase)
             self.assertTrue(parsed.get('matched'), phrase)
             self.assertEqual(parsed.get('action'), 'stop_call', phrase)

@@ -128,12 +128,13 @@ class VoiceTests(unittest.TestCase):
                 self.assertFalse(dialog.free_guard.isChecked())
                 dialog.deleteLater()
 
-    def test_bounded_pcm_and_zero_padding(self):
+    def test_bounded_pcm_drops_stale_audio_and_zero_pads(self):
         buf = PCMBuffer(8)
         buf.append(b'abcd')
         self.assertEqual(buf.read(6), (b'abcd\0\0', True))
-        with self.assertRaises(BufferError):
-            buf.append(b'012345678')
+        self.assertEqual(buf.append(b'012345678'), 1)
+        self.assertEqual(buf.dropped_bytes, 1)
+        self.assertEqual(buf.read(8), (b'12345678', True))
         self.assertFalse(buf)
 
     def test_capture_gating_mute_and_queue_limit(self):

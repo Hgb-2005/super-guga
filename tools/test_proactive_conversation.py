@@ -16,7 +16,7 @@ APP=QApplication.instance() or QApplication([])
 
 def fake_panel(memory):
     runtime=SimpleNamespace(music=SimpleNamespace(playing=False))
-    voice=SimpleNamespace(active=True,_playing=False,_generating=False,_user_speaking=False,_last_activity=time.monotonic()-300,
+    voice=SimpleNamespace(active=True,_playing=False,_generating=False,_user_speaking=False,_last_activity=time.monotonic()-3600,
         notify_proactive=MagicMock(return_value=True))
     return SimpleNamespace(memory=memory,voice=voice,voice_active=True,busy=False,runtime=runtime,
         active_profile=memory.profile('001'),pet=None)
@@ -26,7 +26,7 @@ class ProactiveTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.memory=AgentMemoryStore(Path(self.tmp.name)/'memory.sqlite3')
         self.panel=fake_panel(self.memory);self.proactive=ProactiveConversation(self.panel,self.memory)
-        self.proactive.started_at=time.monotonic()-300
+        self.proactive.started_at=time.monotonic()-3600
 
     def tearDown(self):self.proactive.stop();self.tmp.cleanup()
 
@@ -39,21 +39,28 @@ class ProactiveTests(unittest.TestCase):
 
     def test_busy_tasks_music_or_user_speech_never_interrupt(self):
         panel=fake_panel(self.memory);panel.busy=True
-        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-300
+        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-3600
         self.assertIsNone(p.tick());p.stop()
         for attr in ('_generating','_playing','_user_speaking'):
             panel=fake_panel(self.memory);setattr(panel.voice,attr,True)
-            p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-300
+            p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-3600
             self.assertIsNone(p.tick());p.stop()
         panel=fake_panel(self.memory);panel.runtime.music.playing=True
-        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-300
+        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-3600
         self.assertIsNone(p.tick());p.stop()
 
     def test_not_enough_idle_time_or_inactive_call_does_nothing(self):
         panel=fake_panel(self.memory);panel.voice._last_activity=time.monotonic()-5
-        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-300
+        p=ProactiveConversation(panel,self.memory);p.started_at=time.monotonic()-3600
         self.assertIsNone(p.tick());p.stop()
         panel.voice.active=False;p=ProactiveConversation(panel,self.memory);self.assertIsNone(p.tick());p.stop()
+
+    def test_disabled_initiative_never_starts_or_ticks(self):
+        panel=fake_panel(self.memory);p=ProactiveConversation(panel,self.memory)
+        p.configure(False,900);p.started_at=time.monotonic()-3600
+        self.assertFalse(p.status()['active']);self.assertFalse(p.status()['enabled'])
+        self.assertIsNone(p.tick())
+        self.assertTrue(p.configure(True,60)['active']);p.stop()
 
     def test_realtime_protocol_queues_initiative_once_without_task_tools(self):
         voice=AgentRealtimeVoice();voice._thread=MagicMock();voice._thread.is_alive.return_value=True

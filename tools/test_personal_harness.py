@@ -262,8 +262,13 @@ class IntegrationTests(unittest.TestCase):
                  patch.object(p.runtime.screen_share,'assist_context',return_value=shared), \
                  patch('core.realtime_agent.AgentRealtimeVoice.start') as start:
                 p.toggle_voice(True)
-                share.assert_called_once();start.assert_called_once()
+                # The bridge is wired before connecting, but capture is deferred
+                # to the connected callback so it never delays the handshake.
+                share.assert_not_called();start.assert_called_once()
+                self.assertTrue(p._screen_share_pending)
                 self.assertTrue(p.voice.screen_bridge_status()['attached'])
+                p._voice_connected_changed(True)
+                share.assert_called_once();self.assertFalse(p._screen_share_pending)
                 p.voice._cfg=dict(DEFAULTS)
                 self.assertIn('真实测试控件',p.voice._session_settings()['instructions'])
         finally:

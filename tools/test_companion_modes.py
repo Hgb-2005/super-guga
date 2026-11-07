@@ -118,8 +118,9 @@ class InitiativeTests(unittest.TestCase):
         self.p=ProactiveConversation(self.panel,self.memory);self.p.started_at=0
     def tearDown(self):self.p.stop();self.temp.cleanup()
 
-    def test_default_is_ten_seconds_and_busy_defers(self):
-        self.assertEqual(self.p.interval_seconds,10);self.assertEqual(self.p.cooldown_seconds,10)
+    def test_default_is_thirty_seconds_and_busy_defers(self):
+        self.assertEqual(self.p.interval_seconds,30);self.assertEqual(self.p.cooldown_seconds,30)
+        self.assertTrue(self.p.enabled)
         self.panel.busy=True
         with patch.object(self.p,'_compose_offline') as compose:
             self.assertIsNone(self.p.tick());compose.assert_not_called()

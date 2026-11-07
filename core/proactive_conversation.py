@@ -1,4 +1,4 @@
-"""Ten-second companion initiative with date-aware and news-grounded topics."""
+"""Companion initiative on a configurable interval (default 30s, disableable)."""
 import threading
 import time
 from collections import deque
@@ -18,7 +18,10 @@ class ProactiveConversation(QObject):
         self.memory=memory or panel.memory
         self.clock=clock or time.monotonic;self._news_provider=news_provider
         settings=getattr(getattr(panel,'pet',None),'_config',None)
-        self.interval_seconds=max(10,min(900,int(settings._s.value('multiagent/companion_interval_seconds',10,type=int)))) if settings else 10
+        self.enabled=bool(settings._s.value('multiagent/proactive_enabled',True,type=bool)) if settings else True
+        # Default 30s: frequent enough to feel alive, sparse enough not to nag.
+        # The floor is 10s so the menu can express "very chatty" without a spin lock.
+        self.interval_seconds=max(10,min(10800,int(settings._s.value('multiagent/companion_interval_seconds',30,type=int)))) if settings else 30
         self.cooldown_seconds=self.interval_seconds
         refresh_minutes=max(5,min(120,int(settings._s.value('multiagent/news_refresh_minutes',15,type=int)))) if settings else 15
         self.news_refresh_seconds=refresh_minutes*60
@@ -32,19 +35,32 @@ class ProactiveConversation(QObject):
         self.offline_ready.connect(self._deliver_offline)
 
     def start(self):
+        if not self.enabled:return self.status()
         if self.timer.isActive():return self.status()
         self.started_at=time.monotonic();self.timer.start();return self.status()
 
     def stop(self):self.timer.stop()
 
+    def configure(self,enabled=None,interval_seconds=None):
+        if enabled is not None:self.enabled=bool(enabled)
+        if interval_seconds is not None:
+            self.interval_seconds=max(10,min(10800,int(interval_seconds)))
+            self.cooldown_seconds=self.interval_seconds
+            self.last_at=0.0
+        self.started_at=time.monotonic()
+        if self.enabled:self.start()
+        else:self.stop()
+        return self.status()
+
     def status(self):
-        return dict(active=self.timer.isActive(),idle_seconds=self.interval_seconds,cooldown_seconds=self.cooldown_seconds,
+        return dict(active=self.timer.isActive(),enabled=self.enabled,idle_seconds=self.interval_seconds,cooldown_seconds=self.cooldown_seconds,
             last_at=self.last_at,last_result=self.last_result,offline_speak=self.offline_speak,
             composing=self._compose_active,call_active=bool(getattr(self.panel,'voice_active',False)),
             news_count=len(self._news),news_age_seconds=round(self.clock()-self._news_at,1) if self._news_at else None,
             news_refresh_seconds=self.news_refresh_seconds,news_error=self._news_error)
 
     def tick(self):
+        if not self.enabled:return None
         panel=self.panel
         if getattr(office_music(panel),'playing',False):return None
         if getattr(panel,'busy',False):
@@ -173,6 +189,7 @@ class ProactiveConversation(QObject):
         elif self.last_result and self.last_result.get('event')==event:self.last_result.update(state='failed',error=error or 'empty')
 
     def _deliver_offline(self,event,text):
+        if not self.enabled:return
         panel=self.panel;context=self._pending_context or {}
         if context.get('event')!=event:return
         if (getattr(panel,'voice_active',False) or (getattr(panel,'busy',False) and getattr(panel,'_run_kind',None)=='answer')

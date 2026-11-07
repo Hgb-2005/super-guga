@@ -25,11 +25,11 @@ def fake_settings(values=None):
 
 def fake_panel(memory,voice_active=False):
     voice=SimpleNamespace(active=voice_active,_playing=False,_generating=False,_user_speaking=False,
-        _last_activity=time.monotonic()-300,notify_proactive=MagicMock(return_value=True))
+        _last_activity=time.monotonic()-3600,notify_proactive=MagicMock(return_value=True))
     pet=SimpleNamespace(_config=fake_settings({'screen/share_fps':3,'screen/context_seconds':2.5}),_say_with_expression=MagicMock())
     return SimpleNamespace(memory=memory,voice=voice,voice_active=voice_active,busy=False,
         runtime=SimpleNamespace(music=SimpleNamespace(playing=False),dsh=None),active_profile=memory.profile('001'),
-        pet=pet,active_agent_id='001',active_id='c',store=Mock(),_last_user_activity=time.monotonic()-300,
+        pet=pet,active_agent_id='001',active_id='c',store=Mock(),_last_user_activity=time.monotonic()-3600,
         _show_active_bubble=MagicMock())
 
 
@@ -50,7 +50,7 @@ class ScreenShareTests(unittest.TestCase):
         self.assertEqual(match('停止分享屏幕')['action'],'screen_share_stop')
         self.assertFalse(match('截一张屏幕截图')['matched'])
 
-    def test_real_bounded_capture_stays_in_memory_and_supports_two_to_five_fps(self):
+    def test_real_bounded_capture_stays_in_memory_and_supports_one_to_five_fps(self):
         controller=ScreenShareController(self.panel);frames=[];contexts=[]
         controller.frame_ready.connect(frames.append);controller.context_ready.connect(contexts.append)
         with patch('core.screen_visual.describe_frame',return_value=dict(ok=True,text='桌面上打开了记事本，输入区是当前焦点。',model='fixture')):
@@ -61,6 +61,7 @@ class ScreenShareTests(unittest.TestCase):
         self.assertTrue(state['active']);self.assertEqual(state['storage'],'memory_only')
         self.assertGreaterEqual(state['sequence'],3);self.assertTrue(state['context']);self.assertEqual(state['fps'],2)
         self.assertGreater(frames[0]['size']['width'],0)
+        self.assertEqual(controller.start(1)['fps'],1);controller.stop()
         with self.assertRaises(ValueError):controller.start(6)
 
     def test_stale_context_is_not_presented_as_current(self):
@@ -76,6 +77,13 @@ class ScreenShareTests(unittest.TestCase):
         state=controller.assist_context(max_age=12)
         self.assertFalse(state['fresh']);self.assertFalse(state['context_matches_foreground'])
         self.assertIn('当前前台已经改变',state['context'])
+
+    def test_successful_vision_does_not_run_ocr_in_parallel(self):
+        controller=ScreenShareController(self.panel);controller._generation=1;controller._analysis_active=True
+        with patch('core.screen_visual.describe_frame',return_value=dict(ok=True,text='页面可见')), \
+             patch.object(controller,'_ocr_fallback') as ocr:
+            controller._analyze('data:image/jpeg;base64,AA==',1)
+        ocr.assert_not_called();self.assertEqual(controller.status()['ocr_count'],0)
 
     def test_rate_limit_uses_ocr_fallback_and_backoff(self):
         controller=ScreenShareController(self.panel)
@@ -167,7 +175,7 @@ class ProactiveTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.memory=AgentMemoryStore(Path(self.tmp.name)/'memory.sqlite3')
         self.memory.add_dialogue('001','user','我最近在整理 AI 相关的学习资料。')
         self.panel=fake_panel(self.memory,voice_active=False)
-        self.proactive=ProactiveConversation(self.panel,self.memory);self.proactive.started_at=time.monotonic()-300
+        self.proactive=ProactiveConversation(self.panel,self.memory);self.proactive.started_at=time.monotonic()-3600
 
     def tearDown(self):self.proactive.stop();self.tmp.cleanup()
 

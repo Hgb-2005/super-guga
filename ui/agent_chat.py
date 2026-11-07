@@ -60,6 +60,8 @@ class AgentChatWindow(QDialog):
         self._last_user_activity=time.monotonic()
         self._pending_tts_display=None
         self._bubble_voice_long_call=False
+        self._voice_departing=False
+        self._voice_farewell_started=0.0
         self._fast_inflight=False
         self.fast_result.connect(self._finish_fast_command)
         self.show_archived = False
@@ -108,6 +110,7 @@ class AgentChatWindow(QDialog):
         self.screen_answer_ready.connect(self._deliver_screen_answer)
         self._screen_share_call_owned = False
         self._screen_share_manual_stop = False
+        self._screen_share_pending = False
         self._screen_share_retry_at = 0.0
         self._screen_share_watchdog_timer = QTimer(self)
         self._screen_share_watchdog_timer.setInterval(5000)
@@ -1044,6 +1047,7 @@ class AgentChatWindow(QDialog):
 
     def _stop_call_screen_share(self):
         self._screen_share_watchdog_timer.stop()
+        self._screen_share_pending=False
         try:
             if self.runtime.screen_share.status().get('active'):self.runtime.screen_share.stop()
         except Exception:pass
@@ -1091,6 +1095,7 @@ class AgentChatWindow(QDialog):
                     return
                 cfg = load_settings()
             self.voice_active = True
+            self._voice_departing=False;self._voice_farewell_started=0.0
             from core.browser_interaction import BrowserInteraction
             if getattr(self,'_browser_interaction',None) is None:self._browser_interaction=BrowserInteraction()
             self._browser_interaction.prewarm()
@@ -1133,7 +1138,10 @@ class AgentChatWindow(QDialog):
             self.read_aloud.setEnabled(False)
             self.voice_button.setText('结束长对话')
             self.pet._agent_bubble.set_call_active(True,self.active_id)
-            self._start_call_screen_share()
+            # Capture is an auxiliary context source. Queue it for the connected
+            # callback so a screen grab can never sit on the handshake path and
+            # a capture failure can never abort a call that is still connecting.
+            self._screen_share_pending=True
             self.voice.start(cfg)
             self.proactive.start()
             self.voice._external_playing=self.runtime.music.playing
@@ -1169,6 +1177,9 @@ class AgentChatWindow(QDialog):
         if connected:
             self.status.setText('持续通话中 · 可以直接说话')
             self.pet._agent_bubble.set_call_active(True,self.active_id)
+            if getattr(self,'_screen_share_pending',False):
+                self._screen_share_pending=False
+                self._start_call_screen_share()
         else:
             # Not the end of the call: the worker reconnects. Show a reconnecting
             # state, never "通话已结束", otherwise a 2-second network hiccup looks
@@ -1425,9 +1436,21 @@ class AgentChatWindow(QDialog):
             threading.Thread(target=work,daemon=True).start()
             return self._last_fast_result
         if command.get('action')=='stop_call':
-            self.status.setText('已停止实时语音对话')
-            self.voice_button.setChecked(False)
-            self._last_fast_result=dict(ok=True,message='已停止实时语音对话')
+            if getattr(self,'_voice_departing',False):
+                return getattr(self,'_last_fast_result',dict(ok=True,execution_pending=True,message='本鹅正在退下'))
+            self._voice_departing=True;self._voice_farewell_started=time.monotonic()
+            line='真的要让本鹅走呀？好吧，那本鹅先退下；想我的时候再叫我。'
+            self.status.setText(line)
+            self._show_active_bubble(line)
+            try:
+                if self.voice:
+                    self.voice.interrupt();self.voice.mute(True)
+                self.mute_button.setChecked(True)
+                self.pet._tts.speak(line)
+            except Exception:
+                pass
+            self._last_fast_result=dict(ok=True,execution_pending=True,message=line)
+            QTimer.singleShot(600,self._finish_voice_farewell)
             return self._last_fast_result
         if command.get('action')=='browser_step':
             self._direct_control_until=time.monotonic()+60
@@ -1571,8 +1594,17 @@ class AgentChatWindow(QDialog):
             self.voice.interrupt()
         self.render()
 
+    def _finish_voice_farewell(self):
+        if not self.voice_active or not getattr(self,'_voice_departing',False):return
+        elapsed=time.monotonic()-getattr(self,'_voice_farewell_started',0.0)
+        speaking=bool(getattr(getattr(self.pet,'_tts',None),'is_speaking',False))
+        if (elapsed<2.5 or speaking) and elapsed<12:
+            QTimer.singleShot(400,self._finish_voice_farewell);return
+        self.voice_button.setChecked(False)
+
     def _voice_finished(self):
         if self.sender() is self.voice:
+            self._voice_departing=False;self._voice_farewell_started=0.0
             self._stop_call_screen_share()
             self.voice_button.setChecked(False)
             if not self.voice.last_error:

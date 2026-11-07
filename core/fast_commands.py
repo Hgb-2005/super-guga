@@ -21,7 +21,9 @@ APP_ALIASES={
 }
 BROWSER_NAMES=('浏览器','默认浏览器','网页浏览器')
 STOP_PHRASES=('停止对话','结束对话','停止通话','结束通话','停止语音','结束语音','别说了','不用聊了',
-    '闭嘴','闭嘴吧','安静','安静点','别说话','别出声','不要说话','不用说了')
+    '闭嘴','闭嘴吧','安静','安静点','别说话','别出声','不要说话','不用说了',
+    '退下','退下了','退下吧','你退下吧','你可以退下了','可以先退下了','去休息吧','你可以去休息了',
+    '不用陪我了','先聊到这里','今天就聊到这里')
 
 
 def normalize(text):
@@ -129,7 +131,7 @@ def match(text):
     singing=re.fullmatch(r'(?:唱(?:一首|首|一下)?|来一首|播放翻唱)\s*《?(.+?)》?',value)
     if singing and len(singing.group(1))<80:
         return dict(prefix,matched=True,action='performance',kind='sing',target=singing.group(1).strip('《》'),silent=True)
-    if value in STOP_PHRASES:
+    if value in STOP_PHRASES or re.fullmatch(r'(?:先)?(?:退下|去休息|休息去吧|走吧|走了)(?:了|吧|啦|啊)?',value):
         return dict(prefix,matched=True,action='stop_call',silent=True,priority='critical',
                     message='结束实时语音通话')
     share=re.fullmatch(r'(?:开始|打开)?(?:共享|分享)(?:一下)?(?:我的|整个|当前)?屏幕(?:[，,]?每秒([2-5两三四五])帧)?(?:吧|一下)?',value)

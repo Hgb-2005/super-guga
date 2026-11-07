@@ -32,7 +32,10 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
         last_round=dict(round=1, usage=dict(total_tokens=224, input_tokens=156, output_tokens=68,
             input_text_tokens=156, input_audio_tokens=None, output_text_tokens=14, output_audio_tokens=53))))
     def finish():
-        assert any(a.text() == '🎙 长语音 · 咕嘎智能体' for a in pet._tray.contextMenu().actions())
+        assert pet._agent_panel is None, 'startup must not build the full AI workspace'
+        actions=[a.text() for a in pet._tray.contextMenu().actions()]
+        assert any(text == '🎙 长语音 · 咕嘎智能体' for text in actions)
+        assert any(text == '💭 陪伴与碎碎念…' for text in actions)
         assert '连续聊' in panel.transcript.toPlainText()
         assert panel.last_tokens.text() == '224'
         output = Path(__file__).resolve().parents[1] / 'runtime/chat/legacy-voice-preview.png'
@@ -46,5 +49,5 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
         pet._tray.hide()
         print('Desktop + call panel + tray actions: PASS', flush=True)
         app.quit()
-    QTimer.singleShot(150, finish)
+    QTimer.singleShot(1400, finish)
     app.exec_()

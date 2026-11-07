@@ -42,13 +42,13 @@ class IdleMotionTests(unittest.TestCase):
             for i in range(60):frames[i]
             self.assertLessEqual(len(frames.cache),36)
 
-    def test_idle_render_drops_to_twenty_fps_and_interaction_restores_thirty(self):
+    def test_idle_render_drops_to_ten_fps_and_interaction_restores_thirty(self):
         self.anim._timer.start()
         self.anim.set_speaking(False);self.anim.action='none';self.anim.dancing=False
         self.anim._task_motion.jobs.clear();self.anim._temporary_expression=None;self.anim._transition=1.
         self.anim._last_tick-=1
         self.anim._tick()
-        self.assertEqual(self.anim._timer.interval(),50)
+        self.assertEqual(self.anim._timer.interval(),100)
         self.anim.set_speaking(True);self.anim._last_tick-=1;self.anim._tick()
         self.assertEqual(self.anim._timer.interval(),33)
         self.anim._timer.stop()

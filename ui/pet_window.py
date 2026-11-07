@@ -158,7 +158,8 @@ class PetWindow(QWidget):
         # pay stylesheet/DWM window creation latency.
         self._pet_menu = None
         QTimer.singleShot(1200, self._ensure_pet_menu)
-        QTimer.singleShot(1000, self._warm_agent_panel)
+        # The full AI workspace is lazy-loaded on the first chat/voice action.
+        # Startup only creates the lightweight pet, tray and local animation.
 
         # --- 核心 ---
         self._status = StatusSystem(self)
@@ -272,6 +273,48 @@ class PetWindow(QWidget):
         row=QHBoxLayout();reset=QPushButton('恢复原尺寸');reset.clicked.connect(lambda:slider.setValue(100));row.addWidget(reset)
         done=QPushButton('完成');done.clicked.connect(dialog.accept);row.addWidget(done);box.addLayout(row);dialog.exec_()
 
+    def _show_companion_settings(self):
+        from PyQt5.QtWidgets import (QDialog,QVBoxLayout,QCheckBox,QSpinBox,QDialogButtonBox,
+                                     QHBoxLayout,QPushButton)
+        def describe(seconds):
+            seconds=int(seconds)
+            if seconds<60:return '%d 秒'%seconds
+            if seconds%60:return '%d 分 %d 秒'%(seconds//60,seconds%60)
+            return '%d 分钟'%(seconds//60)
+        dialog=QDialog(self);dialog.setWindowTitle('陪伴与碎碎念');dialog.setMinimumWidth(400)
+        box=QVBoxLayout(dialog);settings=self._config._s
+        enabled=QCheckBox('允许咕嘎主动搭话（碎碎念）')
+        enabled.setChecked(settings.value('multiagent/proactive_enabled',True,type=bool))
+        box.addWidget(enabled)
+        box.addWidget(QLabel('两次主动搭话的最短间隔（10 秒 — 60 分钟）'))
+        row=QHBoxLayout();interval=QSpinBox();interval.setRange(10,3600);interval.setSingleStep(5)
+        interval.setSuffix(' 秒')
+        interval.setValue(max(10,min(3600,settings.value('multiagent/companion_interval_seconds',30,type=int))))
+        row.addWidget(interval)
+        for text,value in (('30 秒',30),('2 分钟',120),('5 分钟',300),('10 分钟',600)):
+            quick=QPushButton(text);quick.clicked.connect(lambda _checked=False,v=value:interval.setValue(v))
+            row.addWidget(quick)
+        box.addLayout(row)
+        hint=QLabel();hint.setWordWrap(True);box.addWidget(hint)
+        def refresh():
+            seconds=interval.value()
+            hint.setText('大约每 '+describe(seconds)+' 最多主动说一次；30 秒左右比较自然，'
+                         '拉长到 5 分钟以上几乎只剩关键时刻会开口。')
+        interval.valueChanged.connect(lambda _value:refresh());refresh()
+        interval.setEnabled(enabled.isChecked());enabled.toggled.connect(interval.setEnabled)
+        note=QLabel('取消勾选后，咕嘎完全不会主动找你聊天；你主动发起的对话和长语音不受影响。')
+        note.setWordWrap(True);box.addWidget(note)
+        buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);box.addWidget(buttons)
+        if dialog.exec_()!=QDialog.Accepted:return
+        seconds=interval.value()
+        settings.setValue('multiagent/proactive_enabled',enabled.isChecked())
+        settings.setValue('multiagent/companion_interval_seconds',seconds);settings.sync()
+        panel=getattr(self,'_agent_panel',None)
+        if panel is not None:panel.proactive.configure(enabled.isChecked(),seconds)
+        self._show_agent_bubble('碎碎念已关闭。' if not enabled.isChecked()
+                                else '好，本鹅每隔 '+describe(seconds)+' 最多主动说一次。')
+
     def _init_tray(self):
         self._tray = QSystemTrayIcon(self)
         # 托盘图标：用 idle 表情缩放
@@ -301,6 +344,7 @@ class PetWindow(QWidget):
         team.addAction("同时召唤大肥鱼和 Dora").triggered.connect(self._multi_agent.summon_pair)
         team.addAction("让咕嘎与大肥鱼讨论…").triggered.connect(lambda:self._multi_agent.start_discussion(('001','002')))
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
+        m.addAction("💭 陪伴与碎碎念…").triggered.connect(self._show_companion_settings)
         m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
         m.addAction("🎮 战棋实战操作").triggered.connect(self._open_bg_live)
         m.addAction("退出").triggered.connect(self._quit)
@@ -583,6 +627,7 @@ class PetWindow(QWidget):
         self._menu_netcut.triggered.connect(self._netcut)
         menu.addAction("💬 展开完整对话").triggered.connect(self._open_agent_chat)
         menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
+        menu.addAction("💭 陪伴与碎碎念…").triggered.connect(self._show_companion_settings)
         team = menu.addMenu("👥 多智能体")
         team.addAction("召唤 002 · 大肥鱼").triggered.connect(lambda:self._multi_agent.summon('002'))
         team.addAction("召唤 003 · Dora").triggered.connect(lambda:self._multi_agent.summon('003'))
@@ -757,17 +802,6 @@ class PetWindow(QWidget):
             from ui.agent_chat import AgentChatWindow
             self._agent_panel = AgentChatWindow(self,memory=getattr(self,'_agent_memory',None))
         return self._agent_panel
-
-    def _warm_agent_panel(self):
-        """Keep memory-based initiative available before the first chat click."""
-        try:
-            panel=self._ensure_agent_panel()
-            if panel and not panel.isVisible():panel.hide()
-        except Exception as exc:
-            try:
-                with open(os.path.join(os.path.dirname(__file__),'..','pet_debug.log'),'a',encoding='utf-8') as stream:
-                    stream.write('agent panel warmup failed: '+type(exc).__name__+'\n')
-            except OSError:pass
 
     def _open_agent_chat(self):
         self._ensure_agent_panel()
