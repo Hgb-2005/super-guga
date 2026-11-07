@@ -3,7 +3,7 @@
   "status": "approved",
   "reviewer": "Codex matte + user direction",
   "playback": "once",
-  "frames_sha256": "bf950a204103cc5b167e66e5e3d0d9900d9fd121dda13a262be073463755a72b",
+  "frames_sha256": "5c5ab9cc0516c9e4d898079358209c02fd4f55344b529bef4e545f4190a1d596",
   "checks": {
     "identity": true,
     "continuous_motion": true,

@@ -91,6 +91,21 @@ class IdleMotionTests(unittest.TestCase):
         self.anim.trigger_action('大笑')
         self.assertEqual(self.anim._clip,'idle:laugh')
 
+    def test_every_frame_is_one_silhouette(self):
+        """A detached tuft or flipper sliver reads as debris on the desktop."""
+        import numpy as np
+        import cv2
+        from PIL import Image
+        for name in ('pout','laugh'):
+            folder = ROOT/'resources/actions/idle-motion'/name/'frames'
+            for path in sorted(folder.iterdir()):
+                alpha = np.array(Image.open(path).convert('RGBA'))[:, :, 3]
+                count, _, stats, _ = cv2.connectedComponentsWithStats(
+                    (alpha > 20).astype(np.uint8), 8)
+                islands = len(stats) - 1 if count > 1 else 0
+                self.assertEqual(islands, 1,
+                                 '%s/%s has %d islands' % (name, path.name, islands))
+
     def test_stale_tts_mouth_cannot_block_idle_forever(self):
         self.anim._speaking=False;self.anim.mouth_open=.4;self.anim._clip='talk'
         for _ in range(60):self.anim._tick()

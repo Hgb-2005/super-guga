@@ -8,9 +8,12 @@ recovers the belly while the desaturated backdrop and its shadow stay out.
 Frames are then normalized to the same 245x352 canvas as the existing clips so
 the pet never resizes when an action starts.
 """
+import hashlib
 import json
+import shutil
 import statistics
 import sys
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -34,7 +37,16 @@ def matte(bgr):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1].astype(np.int16)
     value = hsv[:, :, 2].astype(np.int16)
-    core = ((value < 95) | (saturation > 55)).astype(np.uint8) * 255
+    # A fixed cut at 95 also severed the ahoge's base and one flipper edge,
+    # because the lit side of the hood sits just above it and the backdrop is a
+    # grey gradient (dim at the top, bright at the floor). Derive the cut from
+    # the top border, which is always backdrop, so the silhouette stays whole.
+    height = bgr.shape[0]
+    band = np.concatenate([value[:6, :].ravel(),
+                           value[:int(height * .35), :6].ravel(),
+                           value[:int(height * .35), -6:].ravel()])
+    cut = float(np.clip(np.median(band) * .68, 88, 132))
+    core = ((value < cut) | (saturation > 55)).astype(np.uint8) * 255
     core = cv2.morphologyEx(core, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     contours, _ = cv2.findContours(core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     solid = np.zeros_like(core)
@@ -54,22 +66,43 @@ def matte(bgr):
         solid[floor + 3:] = 0
     alpha = cv2.erode(solid, np.ones((3, 3), np.uint8), iterations=1)
     alpha = cv2.GaussianBlur(alpha, (3, 3), .6)
+    # Erosion pinches thin limb edges into their own island for a frame or two,
+    # which reads as a blink on the desktop. Keep the body, drop the specks.
+    islands, labels, sizes, _ = cv2.connectedComponentsWithStats((alpha >= 24).astype(np.uint8), 8)
+    if islands > 2:
+        biggest = max(range(1, islands), key=lambda i: sizes[i, 4])
+        for index in range(1, islands):
+            if index != biggest and sizes[index, 4] < 120:
+                alpha[labels == index] = 0
     rgba = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
     rgba[:, :, 3] = alpha
     return rgba
 
 
 def decode(path):
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        raise ValueError('打不开视频：' + path.name)
-    frames = []
-    while True:
-        ok, frame = capture.read()
-        if not ok:
-            break
-        frames.append(frame)
-    capture.release()
+    path = Path(path)
+    # cv2.VideoCapture still goes through the ANSI code page on Windows, so
+    # 微信视频_*.mp4 cannot be opened in place. Decode from an ASCII temp copy.
+    handle, temporary = path, None
+    if any(ord(ch) > 127 for ch in str(path.resolve())):
+        digest = hashlib.sha1(str(path.resolve()).encode()).hexdigest()[:10]
+        temporary = Path(tempfile.gettempdir()) / ('guga-idle-' + digest + path.suffix)
+        shutil.copy2(path, temporary)
+        handle = temporary
+    try:
+        capture = cv2.VideoCapture(str(handle))
+        if not capture.isOpened():
+            raise ValueError('打不开视频：' + path.name)
+        frames = []
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frames.append(frame)
+        capture.release()
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     if len(frames) < 20:
         raise ValueError('视频帧数过少：' + path.name)
     return frames
@@ -93,6 +126,22 @@ def measure(video):
                 reach_up=max(anchor_bottom - box[1] for box in boxes),
                 median_height=statistics.median(heights),
                 median_cx=statistics.median(box[0] + box[2] / 2 for box in boxes))
+
+
+def drop_specks(canvas, area=120):
+    """Remove alpha islands that no longer touch the body."""
+    frame = np.array(canvas)
+    mask = (frame[:, :, 3] >= 20).astype(np.uint8)
+    count, labels, sizes, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if count <= 2:
+        return canvas
+    biggest = max(range(1, count), key=lambda i: sizes[i, 4])
+    removed = False
+    for index in range(1, count):
+        if index != biggest and sizes[index, 4] < area:
+            frame[labels == index, 3] = 0
+            removed = True
+    return Image.fromarray(frame) if removed else canvas
 
 
 def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
@@ -120,6 +169,9 @@ def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
         y = round(BASELINE - anchor_bottom * scale)
         canvas = Image.new('RGBA', FINAL_CANVAS, (0, 0, 0, 0))
         canvas.alpha_composite(resized, (x, y))
+        # Downscaling swallows one-pixel bridges, so a limb edge can still end up
+        # as a detached speck. Judge the finished canvas, not the source frame.
+        canvas = drop_specks(canvas)
         alpha_box = canvas.getchannel('A').point(lambda v: 255 if v >= 128 else 0).getbbox()
         if alpha_box is None:
             raise ValueError(name + ': 归一化后为空帧')
