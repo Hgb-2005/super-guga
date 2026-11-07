@@ -6,8 +6,13 @@ ALIASES = {'摇头':'head_shake','摇摇头':'head_shake','点头':'nod','点点
            '抖动':'shake','指点':'point','偷看':'peek','傲娇摇头':'head_shake',
            'tsundere':'head_shake','戴墨镜':'sunglasses','摘墨镜':'remove_sunglasses',
            '跳舞':'dance','摇摆':'dance','晃动身体':'dance','停止跳舞':'stop_dance','暗中观察':'sneak_peek'}
-ALIASES.update({'抬头回应':'look_up_step','打盹':'idle_doze','困倦打盹':'idle_doze','比心':'idle_heart','双手比心':'idle_heart'})
-GESTURES = {'head_shake','nod','tilt','wave','bounce','shake','point','peek','none','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','look_up_step','idle_doze','idle_heart'}
+ALIASES.update({'抬头回应':'look_up_step','打盹':'idle_doze','困倦打盹':'idle_doze','比心':'idle_heart','双手比心':'idle_heart',
+                '嘟嘴':'idle_pout','鼓脸':'idle_pout','生闷气':'idle_pout','哼一声':'idle_pout','抱臂嘟嘴':'idle_pout',
+                '大笑':'idle_laugh','仰头笑':'idle_laugh','哈哈笑':'idle_laugh','开怀大笑':'idle_laugh'})
+# Single source of truth: any reviewed clip under resources/actions/idle-motion
+# becomes triggerable by adding its name here.
+IDLE_GESTURES = ('idle_doze', 'idle_heart', 'idle_pout', 'idle_laugh')
+GESTURES = {'head_shake','nod','tilt','wave','bounce','shake','point','peek','none','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','look_up_step'} | set(IDLE_GESTURES)
 GESTURES.add('look_up_step')
 
 def spoken_reply(text):

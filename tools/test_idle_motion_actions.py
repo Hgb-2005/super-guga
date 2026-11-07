@@ -21,15 +21,24 @@ class IdleMotionTests(unittest.TestCase):
         self.anim.stop()
 
     def test_both_native_clips_load_on_the_same_canvas(self):
-        self.assertEqual({name for name,_ in self.anim.idle_motion_clips},{'doze','heart'})
-        self.assertEqual(set(self.anim.task_animation_status()['idle_motion']['loaded']),{'doze','heart'})
+        self.assertEqual({name for name,_ in self.anim.idle_motion_clips},{'doze','heart','pout','laugh'})
+        self.assertEqual(set(self.anim.task_animation_status()['idle_motion']['loaded']),
+                         {'doze','heart','pout','laugh'})
         for name in ('doze','heart'):
             clip=self.anim.clips['idle:'+name]
             self.assertEqual(clip['fps'],24.)
             self.assertEqual(len(clip['frames']),239)
             self.assertTrue(clip['one_shot_only']);self.assertFalse(clip['loop'])
+        for name in ('pout','laugh'):
+            clip=self.anim.clips['idle:'+name]
+            self.assertEqual(clip['fps'],24.)
+            self.assertEqual(len(clip['frames']),241)
+            self.assertTrue(clip['one_shot_only']);self.assertFalse(clip['loop'])
+        # Every clip must share one canvas, otherwise the pet jumps in size.
+        for name in ('doze','heart','pout','laugh'):
+            clip=self.anim.clips['idle:'+name]
             sizes={(pm.width(),pm.height()) for pm in clip['frames']}
-            self.assertEqual(len(sizes),1)
+            self.assertEqual(len(sizes),1, name)
             width,height=next(iter(sizes))
             self.assertLessEqual(abs(width-self.anim._dw),1)
             self.assertLessEqual(abs(height-self.anim._dh),1)
@@ -70,10 +79,17 @@ class IdleMotionTests(unittest.TestCase):
                 self.assertFalse((self.anim._clip or '').startswith('idle:'))
 
     def test_menu_and_control_can_trigger_each_video_directly(self):
-        for action,clip in (('idle_doze','idle:doze'),('idle_heart','idle:heart')):
+        for action,clip in (('idle_doze','idle:doze'),('idle_heart','idle:heart'),
+                            ('idle_pout','idle:pout'),('idle_laugh','idle:laugh')):
             self.anim.trigger_action(action)
             self.assertEqual(self.anim._clip,clip)
             self.assertFalse(self.anim.dancing)
+
+    def test_spoken_names_reach_the_two_new_video_actions(self):
+        self.anim.trigger_action('嘟嘴')
+        self.assertEqual(self.anim._clip,'idle:pout')
+        self.anim.trigger_action('大笑')
+        self.assertEqual(self.anim._clip,'idle:laugh')
 
     def test_stale_tts_mouth_cannot_block_idle_forever(self):
         self.anim._speaking=False;self.anim.mouth_open=.4;self.anim._clip='talk'

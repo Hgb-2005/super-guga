@@ -36,6 +36,23 @@ with patch('core.keyboard_hook.KeyboardHook.start'), patch('ui.tts_engine.TTSEng
         actions=[a.text() for a in pet._tray.contextMenu().actions()]
         assert any(text == '🎙 长语音 · 咕嘎智能体' for text in actions)
         assert any(text == '💭 陪伴与碎碎念…' for text in actions)
+        # Both supplied videos must stay reachable from the pet's right-click menu.
+        pet._ensure_pet_menu()
+        def find_menu(items, title):
+            for item in items:
+                sub = item.menu()
+                if sub is None:
+                    continue
+                if item.text() == title:
+                    return sub
+                found = find_menu(sub.actions(), title)
+                if found is not None:
+                    return found
+            return None
+        natural = find_menu(pet._pet_menu.actions(), '自然动作 · 视频')
+        assert natural is not None, 'the video-action submenu must exist'
+        labels = [a.text() for a in natural.actions()]
+        assert labels == ['困倦打盹', '双手比心', '抱臂嘟嘴', '仰头大笑'], labels
         assert '连续聊' in panel.transcript.toPlainText()
         assert panel.last_tokens.text() == '224'
         output = Path(__file__).resolve().parents[1] / 'runtime/chat/legacy-voice-preview.png'

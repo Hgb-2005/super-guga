@@ -25,6 +25,7 @@ from core.keyboard_hook import KeyboardHook
 from core.status_system import StatusSystem
 from core.interaction import get_action, ACTIONS
 from core.config_manager import ConfigManager
+from core.embodiment import IDLE_GESTURES
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
@@ -651,8 +652,10 @@ class PetWindow(QWidget):
         demo.setEnabled('--experimental-avatar-3d' in sys.argv)
         demo.triggered.connect(self._show_avatar_actions)
         natural = stage.addMenu('自然动作 · 视频')
-        natural.addAction('困倦打盹').triggered.connect(lambda:self._perform_gesture('idle_doze'))
-        natural.addAction('双手比心').triggered.connect(lambda:self._perform_gesture('idle_heart'))
+        for label, gesture in (('困倦打盹','idle_doze'), ('双手比心','idle_heart'),
+                               ('抱臂嘟嘴','idle_pout'), ('仰头大笑','idle_laugh')):
+            natural.addAction(label).triggered.connect(
+                lambda _checked=False, name=gesture: self._perform_gesture(name))
         expressions = stage.addMenu('表情')
         for label, expression in (('开心', 'happy'), ('傲娇', 'playful'), ('惊讶', 'surprised'),
                                   ('困了', 'sleepy'), ('委屈', 'sad'), ('日常', 'normal')):
@@ -1352,7 +1355,7 @@ class PetWindow(QWidget):
         schedule(15000, finish)
 
     def _queue_voice_gesture(self,name):
-        if name in ('sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','idle_doze','idle_heart') or (self._realtime_active() and self._realtime_voice.is_speaking):
+        if name in ('sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek') + IDLE_GESTURES or (self._realtime_active() and self._realtime_voice.is_speaking):
             self._perform_gesture(name)
         else:
             self._pending_voice_gesture=name

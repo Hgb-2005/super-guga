@@ -9,6 +9,7 @@ import uuid
 from PyQt5.QtCore import pyqtSignal
 from core.realtime_voice import RealtimeVoice, session_settings
 from core.fast_commands import match as match_fast_command, command_key, command_text
+from core.embodiment import IDLE_GESTURES
 
 ROUTER_VERSION='2026-11-05.local-eyes.2'
 SCREEN_CONTEXT_MIN_INTERVAL=10
@@ -37,7 +38,7 @@ def is_screen_question(text):
     return bool(screen and question and not action)
 
 GESTURE_TOOL=dict(type='function',name='perform_gesture',description='让咕嘎本体实际做简单动作；静默调用，不把动作名称念出来。',
-    parameters=dict(type='object',properties=dict(name=dict(type='string',enum=['head_shake','nod','tilt','wave','bounce','peek','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','idle_doze','idle_heart'])),required=['name'],additionalProperties=False))
+    parameters=dict(type='object',properties=dict(name=dict(type='string',enum=['head_shake','nod','tilt','wave','bounce','peek','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek',*IDLE_GESTURES])),required=['name'],additionalProperties=False))
 
 EXPRESSION_TOOL=dict(type='function',name='set_expression',
     description='切换咕嘎已有的表情贴图。根据对话情境适度使用；sleepy困倦、sad委屈、surprised惊讶、playful傲娇、happy开心。困倦保持到主人主动说话、发消息或点击后恢复happy，不能自行唤醒。其他表情保持到下次明确切换；normal恢复常态。静默调用，不朗读标签。',
@@ -129,7 +130,7 @@ class AgentRealtimeVoice(RealtimeVoice):
                 goal=str(state.get('goal',''))[:350],summary=str(state.get('summary',''))[:600])
 
     def interaction_status(self):
-        return dict(self._latency,commands_pending=self._commands.qsize(),pending_tools=len(self._tasks),
+        return dict(self._latency,audio_path=self.audio_path_status(),commands_pending=self._commands.qsize(),pending_tools=len(self._tasks),
             generating=self._generating,playing=self._playing,task_running=self._task_context.get('running',False))
 
     def _request_audio_response(self):
@@ -550,7 +551,7 @@ class AgentRealtimeVoice(RealtimeVoice):
                 return
             if item.get('name')=='perform_gesture':
                 args=json.loads(item.get('arguments') or '{}');name=args.get('name')
-                if name not in ('head_shake','nod','tilt','wave','bounce','peek','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek','idle_doze','idle_heart'):raise ValueError('未知动作')
+                if name not in {'head_shake','nod','tilt','wave','bounce','peek','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek'} | set(IDLE_GESTURES):raise ValueError('未知动作')
                 self.gesture.emit(name)
                 self.resolve_task(call_id,dict(ok=True,answer='动作已执行；直接继续台词，不说动作名称'))
                 return

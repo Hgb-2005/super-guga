@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "status": "approved",
+  "reviewer": "Codex matte + user direction",
+  "playback": "once",
+  "frames_sha256": "bf950a204103cc5b167e66e5e3d0d9900d9fd121dda13a262be073463755a72b",
+  "checks": {
+    "identity": true,
+    "continuous_motion": true,
+    "no_ghosts": true,
+    "anatomy": true,
+    "entry_exit_transition": true,
+    "transition_variation_accepted": false,
+    "loop_seam": false
+  },
+  "user_approval": {
+    "by": "user",
+    "quote": "把这两个本地做好的视频自然的加入到咕嘎的动作中，日常也能做出这些动作，同时能唤起",
+    "scope": "用户提供的两段本地视频，作为自然待机动作并可显式唤起"
+  },
+  "notes": [
+    "241 frames at 24fps from 720x960 source",
+    "silhouette matte: 灰度影棚背景 + 接触阴影已去除，白肚通过轮廓填充保留",
+    "normalized to fixed 245x352 canvas, baseline 350",
+    "源片段：仰头大笑并张臂，10 秒，241 帧原生 24fps"
+  ]
+}

@@ -520,7 +520,7 @@ class SpriteAnimator:
         from core.embodiment import ALIASES
         action=ALIASES.get(action,action)
         if action!='none' and (self._clip or '').startswith('idle:'):self.stop_clip()
-        if action in ('idle_doze','idle_heart'):
+        if action.startswith('idle_') and action[5:] in {n for n,_ in self.idle_motion_clips}:
             if self.expression!='sleepy' and not self._speaking and not self._being_dragged:
                 self.play_idle_motion(action[5:])
             return

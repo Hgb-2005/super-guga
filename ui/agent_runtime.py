@@ -1,6 +1,7 @@
 """Application-owned tool registry; the same handlers serve typed and spoken commands."""
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
+from core.embodiment import IDLE_GESTURES
 
 
 class AppRuntime:
@@ -283,7 +284,7 @@ class AppRuntime:
             pet._reset_pos()
         elif action == 'animate':
             name = args.get('name', 'bounce')
-            if name not in ('look_up_step','idle_doze','idle_heart','bounce', 'shake', 'point', 'peek', 'tsundere','head_shake','nod','tilt','wave','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek'):
+            if name not in ('look_up_step','bounce', 'shake', 'point', 'peek', 'tsundere','head_shake','nod','tilt','wave','sunglasses','remove_sunglasses','dance','stop_dance','sneak_peek') + IDLE_GESTURES:
                 raise ValueError('未知动画')
             if str(getattr(self.panel,'active_agent_id','001'))!='001' and hasattr(pet,'_multi_agent'):
                 pet._multi_agent.gesture(self.panel.active_agent_id,name)

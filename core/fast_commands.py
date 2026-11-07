@@ -124,7 +124,9 @@ def match(text):
     gestures={'戴墨镜':'sunglasses','戴上墨镜':'sunglasses','摘墨镜':'remove_sunglasses','摘下墨镜':'remove_sunglasses',
         '跳舞':'dance','摇摆':'dance','晃动身体':'dance','停止跳舞':'stop_dance','停止摇摆':'stop_dance','暗中观察':'sneak_peek',
         '打盹':'idle_doze','困倦打盹':'idle_doze','比心':'idle_heart','双手比心':'idle_heart',
-        '比个心':'idle_heart','比一下心':'idle_heart','给你比心':'idle_heart','比心啦':'idle_heart'}
+        '比个心':'idle_heart','比一下心':'idle_heart','给你比心':'idle_heart','比心啦':'idle_heart',
+        '嘟嘴':'idle_pout','鼓脸':'idle_pout','生闷气':'idle_pout','抱臂嘟嘴':'idle_pout',
+        '大笑':'idle_laugh','仰头笑':'idle_laugh','哈哈笑':'idle_laugh','开怀大笑':'idle_laugh'}
     if value in gestures:return dict(prefix,matched=True,action='performance',kind='gesture',target=gestures[value],silent=True)
     if value in ('停止唱歌','停歌','别唱了','停止音乐'):
         return dict(prefix,matched=True,action='performance',kind='music_stop',target='',silent=True)

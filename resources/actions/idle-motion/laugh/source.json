@@ -1,0 +1,29 @@
+{
+  "name": "laugh",
+  "frames": 241,
+  "native_fps": 24.0,
+  "canvas": [
+    245,
+    352
+  ],
+  "weight": 1.0,
+  "normalization": {
+    "source_canvas": [
+      720,
+      960
+    ],
+    "body_height": 344,
+    "median_source_height": 802,
+    "scale": 0.396571,
+    "baseline": 350,
+    "edge_clipped_frames": 152
+  },
+  "source_label": "用户提供的本地生成视频（微信 2026-11-04）",
+  "source_file": "微信视频_202611041353_2.mp4",
+  "source_start": 0,
+  "requested_seconds": 10.04,
+  "matte": "silhouette-contour + saturation/value key",
+  "interpolation": false,
+  "crossfade": false,
+  "redistribution": "user supplied"
+}

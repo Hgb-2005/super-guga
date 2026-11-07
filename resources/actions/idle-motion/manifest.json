@@ -12,6 +12,18 @@
       "frames": "heart/frames",
       "native_fps": 24.0,
       "weight": 1.0
+    },
+    {
+      "name": "pout",
+      "frames": "pout/frames",
+      "native_fps": 24.0,
+      "weight": 1.0
+    },
+    {
+      "name": "laugh",
+      "frames": "laugh/frames",
+      "native_fps": 24.0,
+      "weight": 1.0
     }
   ],
   "note": "自然待机动作；仅已审核原生24fps单次片段。语音、拖拽、任务、唱歌与显式表情优先。"

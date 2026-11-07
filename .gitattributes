@@ -1,0 +1,12 @@
+# Approved idle-motion clips are gated by a SHA-256 over the exact frame bytes
+# (core/avatar_review.py). Any newline translation would silently invalidate the
+# review and make the actions disappear at runtime, so keep media binary.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary

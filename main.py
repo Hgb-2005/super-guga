@@ -44,6 +44,12 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("咕嘎企鹅桌宠")
     app.setOrganizationName("BlackCatPet")
+    # Without this the pet shows the generic Python icon in the taskbar and
+    # Alt-Tab list; the tray already draws the penguin itself.
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', 'guga.ico')
+    if os.path.exists(icon_path):
+        from PyQt5.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon_path))
     # This is a tray companion. Closing a transient menu/dialog must not end
     # the desktop process; the existing explicit Quit action still does that.
     app.setQuitOnLastWindowClosed(False)

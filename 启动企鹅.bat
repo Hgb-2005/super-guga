@@ -1,16 +1,11 @@
 @echo off
 rem ===== Guga Penguin launcher (ASCII-only, safe under any codepage) =====
-rem ===== Auto-elevate to admin (required for netcut / disconnect feature) =====
-
-rem --- check admin (fltmc requires admin privileges) ---
-fltmc >nul 2>&1 || (
-    rem --- not admin: request UAC elevation ---
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -WorkingDirectory '%~dp0'"
-    exit /b
-)
+rem This file must never re-launch itself: elevating a .bat makes Windows show
+rem the "unknown publisher" security warning a second time. launcher.py already
+rem requests elevation itself when ai_config.json sets run_as_admin, so the
+rem script below runs exactly once.
 
 cd /d "%~dp0"
-rem Existing apps are left running; close an old pet through its tray if needed.
 
 rem ----- find python: python / py / full paths (must actually RUN, ignore Store alias) -----
 set "PYTHON="
@@ -50,6 +45,6 @@ if errorlevel 1 (
     )
 )
 
-echo Starting Guga Penguin (admin mode)...
+echo Starting Guga Penguin...
 start "" "%PYTHONW%" launcher.py
 exit
