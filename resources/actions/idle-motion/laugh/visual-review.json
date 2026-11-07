@@ -3,7 +3,7 @@
   "status": "approved",
   "reviewer": "Codex matte + user direction",
   "playback": "once",
-  "frames_sha256": "5c5ab9cc0516c9e4d898079358209c02fd4f55344b529bef4e545f4190a1d596",
+  "frames_sha256": "13995066330c32509854280d41d70495a10b47d161d351b75871e4c1b889c5bf",
   "checks": {
     "identity": true,
     "continuous_motion": true,
@@ -21,7 +21,9 @@
   "notes": [
     "241 frames at 24fps from 720x960 source",
     "silhouette matte: 灰度影棚背景 + 接触阴影已去除，白肚通过轮廓填充保留",
+    "scaled by beak-to-feet 258.6px so both clips share one body size",
     "normalized to fixed 245x352 canvas, baseline 350",
+    "whole clip fitted inside the canvas: no flipper or tuft is cropped",
     "源片段：仰头大笑并张臂，10 秒，241 帧原生 24fps"
   ]
 }

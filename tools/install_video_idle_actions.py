@@ -26,8 +26,8 @@ from core.avatar_review import approved_action, frames_digest  # noqa: E402
 
 BASE = ROOT / 'resources/actions/idle-motion'
 FINAL_CANVAS = (245, 352)
-FINAL_BODY_HEIGHT = 344
 BASELINE = 350
+MARGIN = 2
 NATIVE_FPS = 24.0
 QUOTE = '把这两个本地做好的视频自然的加入到咕嘎的动作中，日常也能做出这些动作，同时能唤起'
 
@@ -108,10 +108,38 @@ def decode(path):
     return frames
 
 
+def body_span(frame):
+    """Beak-to-feet distance: a pose-independent stand-in for body size.
+
+    Bounding-box height is the obvious normaliser but it lies: a raised tuft or
+    a spread arm changes the box, not the penguin. The beak is the topmost large
+    yellow blob and the feet own the lowest yellow pixel, so the distance
+    between them tracks the body itself.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hue, saturation, value = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    yellow = ((hue > 15) & (hue < 40) & (saturation > 110) & (value > 140)).astype(np.uint8)
+    rows, _ = np.where(yellow)
+    if not rows.size:
+        raise ValueError('画面里找不到黄色的嘴和脚')
+    count, _, stats, _ = cv2.connectedComponentsWithStats(yellow, 8)
+    # The beak keeps its colour but not its pixel count once the clip is scaled
+    # down, so the size test follows the frame instead of a hard-coded 800.
+    floor = max(40, .0004 * frame.shape[0] * frame.shape[1])
+    beaks = [i for i in range(1, count)
+             if stats[i, 4] > floor and stats[i, 1] < frame.shape[0] * .5]
+    if not beaks:
+        raise ValueError('画面里找不到嘴')
+    beak = max(beaks, key=lambda i: stats[i, 4])
+    beak_y = stats[beak, 1] + stats[beak, 3] / 2
+    beak_x = stats[beak, 0] + stats[beak, 2] / 2
+    return float(rows.max()) - beak_y, beak_x
+
+
 def measure(video):
     """Decode + matte once and keep only the geometry needed for placement."""
     frames = decode(video)
-    boxes = []
+    boxes, spans, beaks = [], [], []
     for frame in frames:
         alpha = matte(frame)[:, :, 3]
         solid = np.where(alpha >= 128, 255, 0).astype(np.uint8)
@@ -119,13 +147,16 @@ def measure(video):
         if box is None:
             raise ValueError('有空白帧：' + video.name)
         boxes.append(box)
-    heights = [box[3] for box in boxes]
-    anchor_bottom = max(box[1] + box[3] for box in boxes)
-    return dict(frames=len(frames), boxes=boxes, heights=heights,
-                anchor_bottom=anchor_bottom,
-                reach_up=max(anchor_bottom - box[1] for box in boxes),
-                median_height=statistics.median(heights),
-                median_cx=statistics.median(box[0] + box[2] / 2 for box in boxes))
+        span, beak_x = body_span(frame)
+        spans.append(span)
+        beaks.append(beak_x)
+    return dict(frames=len(frames), boxes=boxes,
+                anchor_bottom=max(box[1] + box[3] for box in boxes),
+                reach_up=max(max(b[1] + b[3] for b in boxes) - box[1] for box in boxes),
+                max_height=max(box[3] for box in boxes),
+                max_width=max(box[2] for box in boxes),
+                median_body=statistics.median(spans),
+                median_beak_x=statistics.median(beaks))
 
 
 def drop_specks(canvas, area=120):
@@ -144,18 +175,35 @@ def drop_specks(canvas, area=120):
     return Image.fromarray(frame) if removed else canvas
 
 
-def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
+def install(name, video, weight, extra_notes=(), geometry=None, target_body=None):
     geometry = geometry or measure(video)
     frames = decode(video)
     matted = [matte(frame) for frame in frames]
     if len(matted) != geometry['frames']:
         raise ValueError(name + ': 帧数不稳定')
-    median_height = geometry['median_height']
-    median_cx = geometry['median_cx']
     anchor_bottom = geometry['anchor_bottom']
-    # Same body size as the existing clips, but never taller than the canvas:
-    # this source carries a hair strand above the hood that must stay visible.
-    scale = scale or min(FINAL_BODY_HEIGHT / median_height, (BASELINE - 3) / geometry['reach_up'])
+    # Scale from beak-to-feet, never from the bounding box, and let the caller
+    # hand in one body size for every clip so the pet cannot change size when
+    # an action starts.
+    left_src = min(box[0] for box in geometry['boxes'])
+    right_src = max(box[0] + box[2] for box in geometry['boxes'])
+    top_src = min(box[1] for box in geometry['boxes'])
+    scale = (target_body or geometry['median_body']) / geometry['median_body']
+    # Hard guarantee: never let the widest pose exceed the canvas, whatever the
+    # caller asked for. Use the span of "leftmost frame" to "rightmost frame",
+    # because the arms swing and one fixed offset has to cover all of them.
+    scale = min(scale, (FINAL_CANVAS[0] - 2 * MARGIN) / (right_src - left_src))
+    x = FINAL_CANVAS[0] / 2 - geometry['median_beak_x'] * scale
+    y = BASELINE - anchor_bottom * scale
+    # A spread-arm pose must not lose its flipper tips, so slide the whole clip
+    # back inside the canvas (one offset for every frame: motion stays intact).
+    if left_src * scale + x < MARGIN:
+        x = MARGIN - left_src * scale
+    if right_src * scale + x > FINAL_CANVAS[0] - MARGIN:
+        x = FINAL_CANVAS[0] - MARGIN - right_src * scale
+    if top_src * scale + y < MARGIN:
+        y = MARGIN - top_src * scale
+    x, y = round(x), round(y)
     target = BASE / name / 'frames'
     target.mkdir(parents=True, exist_ok=True)
     for stale in target.glob('*.png'):
@@ -165,8 +213,6 @@ def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
         image = Image.fromarray(cv2.cvtColor(rgba, cv2.COLOR_BGRA2RGBA))
         resized = image.resize((round(image.width * scale), round(image.height * scale)),
                                Image.Resampling.LANCZOS)
-        x = round(FINAL_CANVAS[0] / 2 - median_cx * scale)
-        y = round(BASELINE - anchor_bottom * scale)
         canvas = Image.new('RGBA', FINAL_CANVAS, (0, 0, 0, 0))
         canvas.alpha_composite(resized, (x, y))
         # Downscaling swallows one-pixel bridges, so a limb edge can still end up
@@ -175,9 +221,12 @@ def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
         alpha_box = canvas.getchannel('A').point(lambda v: 255 if v >= 128 else 0).getbbox()
         if alpha_box is None:
             raise ValueError(name + ': 归一化后为空帧')
-        if alpha_box[0] <= 0 or alpha_box[2] >= FINAL_CANVAS[0]:
+        if (alpha_box[0] < MARGIN or alpha_box[2] > FINAL_CANVAS[0] - MARGIN
+                or alpha_box[1] < MARGIN or alpha_box[3] > FINAL_CANVAS[1] - 1):
             clipped += 1
         canvas.save(target / ('%04d.png' % index), optimize=False)
+    if clipped:
+        raise RuntimeError('%s: %d 帧贴到画布边缘，会缺角' % (name, clipped))
     review = dict(schema=2, status='approved', reviewer='Codex matte + user direction',
                   playback='once', frames_sha256=frames_digest(target),
                   checks=dict(identity=True, continuous_motion=True, no_ghosts=True, anatomy=True,
@@ -187,14 +236,16 @@ def install(name, video, weight, extra_notes=(), geometry=None, scale=None):
                                      scope='用户提供的两段本地视频，作为自然待机动作并可显式唤起'),
                   notes=['%d frames at %.0ffps from 720x960 source' % (len(matted), NATIVE_FPS),
                          'silhouette matte: 灰度影棚背景 + 接触阴影已去除，白肚通过轮廓填充保留',
-                         'normalized to fixed 245x352 canvas, baseline %d' % BASELINE] + list(extra_notes))
+                         'scaled by beak-to-feet %.1fpx so both clips share one body size' % (target_body or geometry['median_body']),
+                         'normalized to fixed %dx%d canvas, baseline %d' % (FINAL_CANVAS + (BASELINE,)),
+                         'whole clip fitted inside the canvas: no flipper or tuft is cropped'] + list(extra_notes))
     (target.parent / 'visual-review.json').write_text(json.dumps(review, ensure_ascii=False, indent=2),
                                                       encoding='utf-8')
     provenance = dict(name=name, frames=len(matted), native_fps=NATIVE_FPS,
                       canvas=list(FINAL_CANVAS), weight=weight,
-                      normalization=dict(source_canvas=[720, 960], body_height=FINAL_BODY_HEIGHT,
-                                         median_source_height=median_height, scale=round(scale, 6),
-                                         baseline=BASELINE, edge_clipped_frames=clipped),
+                      normalization=dict(source_canvas=[720, 960], body_span=round(target_body or geometry['median_body'], 1),
+                                         source_body_span=round(geometry['median_body'], 1), scale=round(scale, 6),
+                                         baseline=BASELINE, offset=[x, y], edge_clipped_frames=clipped),
                       source_label='用户提供的本地生成视频（微信 2026-11-04）',
                       source_file=video.name, source_start=0, requested_seconds=round(len(matted) / NATIVE_FPS, 2),
                       matte='silhouette-contour + saturation/value key', interpolation=False, crossfade=False,
@@ -220,10 +271,19 @@ def main():
         if not path.is_file():
             raise SystemExit('缺少源视频：' + str(path))
         measured[name] = measure(path)
-    # One shared scale: the two clips must not change the pet's size when they
-    # alternate, so the tighter of the two wins.
-    shared = min(min(FINAL_BODY_HEIGHT / g['median_height'], (BASELINE - 3) / g['reach_up'])
-                 for g in measured.values())
+    # One body size for both clips. It is capped by the widest pose (spread
+    # flippers) and the tallest pose (raised tuft) so no frame gets cropped and
+    # the pet cannot change size when the idle rotation switches clip. The cap
+    # is applied per clip and then the tightest one is shared, otherwise the
+    # clip that hits its own limit first would come out a few percent smaller.
+    def caps(g):
+        span = (max(b[0] + b[2] for b in g['boxes']) - min(b[0] for b in g['boxes'])) or g['max_width']
+        return ((FINAL_CANVAS[0] - 2 * MARGIN) * g['median_body'] / span,
+                (BASELINE - MARGIN) * g['median_body'] / g['reach_up'])
+    width_cap = min(caps(g)[0] for g in measured.values())
+    height_cap = min(caps(g)[1] for g in measured.values())
+    shared = round(min(width_cap, height_cap), 1)
+    print('shared body span %.1fpx (width cap %.1f, height cap %.1f)' % (shared, width_cap, height_cap))
     for name, path, weight, notes in plan:
         records.append(install(name, path, weight, notes, measured[name], shared))
         print('installed', records[-1])

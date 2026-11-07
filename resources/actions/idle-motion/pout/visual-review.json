@@ -3,7 +3,7 @@
   "status": "approved",
   "reviewer": "Codex matte + user direction",
   "playback": "once",
-  "frames_sha256": "1371328c63952cbb50f2d8ce3f57b97f25eb5b24dc922f506f996f13fad3593d",
+  "frames_sha256": "8116d52aeab063be419800f700ed93d0e20102ba4af40ee069a07d88a8032315",
   "checks": {
     "identity": true,
     "continuous_motion": true,
@@ -21,7 +21,9 @@
   "notes": [
     "241 frames at 24fps from 720x960 source",
     "silhouette matte: 灰度影棚背景 + 接触阴影已去除，白肚通过轮廓填充保留",
+    "scaled by beak-to-feet 258.6px so both clips share one body size",
     "normalized to fixed 245x352 canvas, baseline 350",
+    "whole clip fitted inside the canvas: no flipper or tuft is cropped",
     "源片段：抱臂嘟嘴生闷气，10 秒，241 帧原生 24fps"
   ]
 }

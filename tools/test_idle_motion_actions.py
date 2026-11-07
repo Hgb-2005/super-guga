@@ -106,6 +106,32 @@ class IdleMotionTests(unittest.TestCase):
                 self.assertEqual(islands, 1,
                                  '%s/%s has %d islands' % (name, path.name, islands))
 
+    def test_video_clips_share_one_body_size_and_are_never_cropped(self):
+        """Two bugs the user could see: the pet changed size between the two
+        supplied clips, and the laughing pose lost its flipper tips."""
+        import numpy as np
+        import cv2
+        from PIL import Image
+        from tools.install_video_idle_actions import body_span
+        bodies = {}
+        for name in ('pout', 'laugh'):
+            folder = ROOT/'resources/actions/idle-motion'/name/'frames'
+            spans, clipped = [], []
+            for path in sorted(folder.iterdir()):
+                rgba = np.array(Image.open(path).convert('RGBA'))
+                solid = rgba[:, :, 3] >= 128
+                rows, cols = np.where(solid)
+                height, width = rgba.shape[:2]
+                if (cols.min() < 2 or cols.max() > width - 3
+                        or rows.min() < 2 or rows.max() > height - 2):
+                    clipped.append(path.name)
+                span, _ = body_span(cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR))
+                spans.append(span)
+            self.assertEqual(clipped, [], '%s is cropped: %s' % (name, clipped[:3]))
+            bodies[name] = float(np.median(spans))
+        self.assertLess(abs(bodies['pout'] - bodies['laugh']), 2.,
+                        'clips must share one body size, got %r' % bodies)
+
     def test_stale_tts_mouth_cannot_block_idle_forever(self):
         self.anim._speaking=False;self.anim.mouth_open=.4;self.anim._clip='talk'
         for _ in range(60):self.anim._tick()

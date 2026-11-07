@@ -12,11 +12,15 @@
       720,
       960
     ],
-    "body_height": 344,
-    "median_source_height": 863,
-    "scale": 0.394767,
+    "body_span": 258.6,
+    "source_body_span": 681.0,
+    "scale": 0.379736,
     "baseline": 350,
-    "edge_clipped_frames": 4
+    "offset": [
+      -5,
+      12
+    ],
+    "edge_clipped_frames": 0
   },
   "source_label": "用户提供的本地生成视频（微信 2026-11-04）",
   "source_file": "微信视频_202611041353_1.mp4",
