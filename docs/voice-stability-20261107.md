@@ -3,35 +3,40 @@
 本轮围绕四件事：启动不再预热 AI 工作区、空闲占用下调、碎碎念可控、长语音不再被自身管道打断。
 下面只记录可复现的证据与结论，不写推测。
 
-## 一、16:09 / 16:11 通话秒断的真实原因
+## 一、15:40 那次到底断在哪（结论已修正）
 
-日志：`runtime/voice/voice-events-20261107-35516.jsonl`、`...-23200.jsonl`
-
-```
-server_error  code=AllocationQuota.FreeTierOnly  fatal=true
-call_start    provider=bailian  model=qwen-audio-3.1-realtime-plus
-send          event=session.update
-server_error  code=invalid_parameter  fatal=true
-connection_failure  phase=handshake  error=ValueError  uptime_seconds=0.02
-```
-
-结论：
-
-1. 这两次通话用的是 **阿里云百炼（provider=bailian）**，服务端先返回
-   `AllocationQuota.FreeTierOnly`，随后 `session.update` 被拒为 `invalid_parameter`，
-   客户端按 fatal 处理，握手在 **0.02 秒**内结束。
-2. **与屏幕共享无关**：共享是在 `voice.start()` 之后才起采集线程，握手阶段根本没有截图。
-   与上一版 `9c6555c` 对比，`_start_call_screen_share()` 的调用位置与实现完全一致，
-   不是本次回归引入的。
-3. 复测：把 provider 切回 `qianwen`（千问 AI 平台）后握手正常。
+真实通话日志 `runtime/voice/voice-events-20261107-4964.jsonl`：
 
 ```
-provider= qianwen  model= qwen-audio-3.1-realtime-plus
-SESSION_UPDATED at 0.1
-events= ['session.created', 'session.updated']  errors= []  held_seconds= 20.3
+15:40:23  call_start  provider=qianwen        ← 鉴权通过
+15:40:23  connected                            ← 会话建立
+15:40:35  conversation.item.create / response.create
+15:40:46  connection_failure phase=receive  BufferError  uptime=22.88s
+15:40:46  fatal  音频积压超过20秒，请检查输出设备或网络   ← 截图里那句
+15:40:46  call_end
+15:41:05  call_start / connected               ← 用户重开，正常
+15:42:48  disconnect reason=user_stop          ← 用户主动结束，通话 2 分 43 秒
 ```
 
-因此"不能用"是**账号侧额度/资源分配**问题（免费额度用尽或该模型需付费资源），不是代码链路。
+结论：**平台、Key、模型一直是通的**。唯一真实缺陷在本地播放缓冲：写死
+`超过 20 秒即 raise BufferError`，而这个异常被当成致命错误，直接把整通电话掐掉。
+输出设备或网络慢半拍就中招。已改为有界丢弃最旧音频，只提示、不断线。
+
+### 一次误判的记录（必须留档）
+
+16:09 / 16:11 / 16:20 / 16:31 的日志里出现的 `provider=bailian`、
+`AllocationQuota.FreeTierOnly`、`invalid_parameter` **不是用户的通话**，是单元测试写的：
+
+- `tools/test_voice_call_e2e.py`、`tools/test_realtime_voice.py` 用
+  `CFG=dict(..., provider='bailian', api_key='test-credential', workspace_id='test-space')`
+  启动真实引擎（socket 被 mock），`call_start` 事件照样落盘；
+- `tools/test_long_voice_stability.py` 注入 `AllocationQuota.FreeTierOnly`，
+  `tools/test_realtime_voice.py` 注入 `invalid_parameter`。
+
+而 `ai_config.json` 自 **2026-11-05 11:43** 起未修改，一直是 `provider=qianwen`。
+所以"账号额度不足、平台选错"的判断是错的，已作废。
+
+已修：测试进程写 `voice-events-YYYYMMDD-test-<pid>.jsonl`，与真实通话彻底分离。
 
 ## 二、本次代码改动
 

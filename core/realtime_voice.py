@@ -13,6 +13,7 @@ import queue
 import itertools
 import re
 import struct
+import sys
 import threading
 import time
 from urllib.parse import urlencode
@@ -34,7 +35,11 @@ class RecoverableVoiceError(ConnectionError):
 def voice_event(kind, **fields):
     try:
         VOICE_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = VOICE_EVENTS_DIR / ('voice-events-' + time.strftime('%Y%m%d') + '-'+str(os.getpid())+'.jsonl')
+        # Unit tests start real engines with a fake 'bailian' config and inject
+        # platform errors. Writing those into the same timeline as real calls
+        # makes a healthy account look broken, so keep them on a separate file.
+        tag = '-test' if 'unittest' in sys.modules else ''
+        path = VOICE_EVENTS_DIR / ('voice-events-' + time.strftime('%Y%m%d') + tag + '-' + str(os.getpid()) + '.jsonl')
         payload = dict(at=time.strftime('%Y-%m-%d %H:%M:%S'), kind=kind,pid=os.getpid(),
                        **{k: v for k, v in fields.items() if v is not None})
         with _VOICE_EVENTS_LOCK:

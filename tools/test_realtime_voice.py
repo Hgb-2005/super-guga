@@ -139,6 +139,16 @@ class VoiceTests(unittest.TestCase):
                 self.assertIn('maas.qianwenaiapi.com', dialog.endpoint.text())
                 dialog.deleteLater()
 
+    def test_unit_test_events_stay_out_of_the_production_timeline(self):
+        from core import realtime_voice as rv
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(rv,'VOICE_EVENTS_DIR',Path(tmp)):
+                rv.voice_event('call_start',provider='qianwen')
+            names=[p.name for p in Path(tmp).glob('voice-events-*.jsonl')]
+            self.assertTrue(names, 'voice_event wrote nothing')
+            # A fake bailian config from a test must never masquerade as a real call.
+            self.assertIn('-test-',names[0])
+
     def test_bounded_pcm_drops_stale_audio_and_zero_pads(self):
         buf = PCMBuffer(8)
         buf.append(b'abcd')
