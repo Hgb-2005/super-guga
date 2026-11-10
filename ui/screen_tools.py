@@ -151,11 +151,11 @@ class ExplainDialog(QDialog):
 class SelectionBar(QWidget):
     chosen=pyqtSignal(str,object)
     def __init__(self,parent=None):
-        super().__init__(parent,Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
+        super().__init__(None,Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint|Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating);self.payload={};self.presentation=0
         self.setStyleSheet('QWidget{background:#fff;border:1px solid #e1e5ed;border-radius:8px;} QPushButton{border:0;background:transparent;padding:6px 10px;font:12px "Microsoft YaHei UI";} QPushButton:hover{background:#edf2ff;border-radius:6px;}')
         row=QHBoxLayout(self);row.setContentsMargins(3,2,3,2);row.setSpacing(1)
-        for label,mode in (('解释','explain'),('截图分析','analyze')):
+        for label,mode in (('截图提问','analyze'),('解释','explain')):
             b=QPushButton(label);b.setFocusPolicy(Qt.NoFocus);b.clicked.connect(lambda checked=False,m=mode:self.pick(m));row.addWidget(b)
         close=QPushButton('×');close.setFocusPolicy(Qt.NoFocus);close.clicked.connect(self.dismiss);row.addWidget(close)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.dismiss)
@@ -198,6 +198,7 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
     ready=pyqtSignal(str,object)
     selection_verified=pyqtSignal(object)
     selection_text_checked=pyqtSignal(object)
+    selection_enabled_changed=pyqtSignal(bool)
     def __init__(self,pet,register=True):
         QObject.__init__(self,pet);QAbstractNativeEventFilter.__init__(self)
         self.pet=pet;self.capture=None;self.popup=None;self.active=False;self.hotkeys=[];self.hotkey_errors=[];self._generation=0;self._capture_pending=False
@@ -205,6 +206,12 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
         self.selection_bar.chosen.connect(self._selected_action)
         self.selection_capture_sequence=0;self.last_selection_status='idle'
         self._selection_probe_busy=False
+        self._pending_selection_event=None
+        self._cached_selection=None
+        self.selection_diagnostics=dict(attempts=0)
+        from ui.selection_clipboard import SelectionCopy
+        self._selection_copy=SelectionCopy(self);self._selection_copy.done.connect(self._compat_selection_ready)
+        self._compat_candidate=None
         self.selection_verified.connect(self._selection_verified)
         self.selection_text_checked.connect(self._text_selection_checked)
         from core.selection_watcher import SelectionWatcher
@@ -239,6 +246,9 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
         self._restore_panel=bool(panel and panel.isVisible());self._restore_popup=bool(self.popup and self.popup.isVisible())
         self._restore_pet=self.pet.isVisible()
         self._restore_bubble=self.pet._agent_bubble.isVisible()
+        launcher=getattr(self.pet,'_floating_launcher',None)
+        self._restore_launcher=bool(launcher and launcher.isVisible())
+        if launcher:launcher.hide()
         if panel:panel.hide()
         if self.popup:self.popup.hide()
         self.pet.hide();self.pet._agent_bubble.hide()
@@ -270,8 +280,11 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
 
     def _restore(self):
         self.capture=None
-        if getattr(self,'_restore_pet',False):self.pet.show()
-        if getattr(self,'_restore_pet',False) and getattr(self,'_restore_bubble',False):
+        hidden=getattr(self.pet,'_desktop_hidden',False)
+        if getattr(self,'_restore_pet',False) and not hidden:self.pet.show()
+        launcher=getattr(self.pet,'_floating_launcher',None)
+        if getattr(self,'_restore_launcher',False) and hidden and launcher:launcher.show()
+        if not hidden and getattr(self,'_restore_pet',False) and getattr(self,'_restore_bubble',False):
             self.pet._agent_bubble.follow_pet();self.pet._agent_bubble.show()
         panel=getattr(self.pet,'_agent_panel',None)
         if getattr(self,'_restore_panel',False) and panel:panel.show()
@@ -297,26 +310,37 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
         self._selection_candidate(dict(hwnd=hwnd,x=point.x,y=point.y,selection_gesture=True,auto_explain=True))
 
     def set_selection_enabled(self,enabled):
+        if self.selection_enabled==bool(enabled):return
         self.selection_enabled=bool(enabled);self.pet._config._s.setValue('screen/selection_bar',self.selection_enabled)
+        self._pending_selection_event=None;self._cached_selection=None
         self.selection_capture_sequence+=1
         self.selection_bar.dismiss()
         if not enabled:self.watcher.stop();self.selection_hook_ok=False
         elif QApplication.platformName()!='offscreen':self.selection_hook_ok=self.watcher.start()
+        self.selection_enabled_changed.emit(self.selection_enabled)
 
     def _selection_candidate(self,event):
         if event.get('kind')=='dismiss':
+            self._pending_selection_event=None
             self.selection_capture_sequence+=1;self.selection_bar.dismiss();return
         if not self.selection_enabled or self.capture is not None or self._capture_pending:return
         self.selection_capture_sequence+=1;sequence=self.selection_capture_sequence
         self.selection_bar.dismiss()
+        if self._selection_probe_busy:
+            self._pending_selection_event=dict(event);return
         self._selection_probe_busy=True;self.last_selection_status='checking_text'
+        self.selection_diagnostics['attempts']+=1
         # Verify an actual UIA text selection before taking any screenshot. An
         # arbitrary drag, blank Area click, or stale toolbar must stay invisible.
         def verify():
+            import time
+            started=time.monotonic()
             try:
-                selected=screen_question.selected_text(event.get('hwnd',0))
-                value=dict(valid=self.valid_selection_text(selected,event),selected=selected)
-            except Exception:value=dict(valid=False)
+                selected=screen_question.selected_text(event.get('hwnd',0),event.get('x'),event.get('y'))
+                value=dict(valid=self.valid_selection_text(selected,event),selected=selected,
+                           text_length=len(str(selected.get('text',''))),rectangle_values=len(selected.get('bounds') or []))
+            except Exception as exc:value=dict(valid=False,error_type=type(exc).__name__)
+            value['elapsed_ms']=round((time.monotonic()-started)*1000)
             value.update(sequence=sequence,event=dict(event))
             self.selection_text_checked.emit(value)
         threading.Thread(target=verify,daemon=True,name='selection-text-precheck').start()
@@ -326,43 +350,103 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
         """Require selected text and geometry covering the release point."""
         text=str((selected or {}).get('text','')).strip()
         bounds=(selected or {}).get('bounds') or []
-        if not text or len(bounds)<4:return False
+        def numbers(values):
+            for value in values:
+                if isinstance(value,(list,tuple)):yield from numbers(value)
+                else:yield value
+        bounds=list(numbers(bounds))[:1024]
+        if not text:return False
         try:
             x,y=float(event.get('x',0)),float(event.get('y',0))
             rects=[]
             for i in range(0,len(bounds)-3,4):
                 left,top,width,height=map(float,bounds[i:i+4])
                 if width>=1 and height>=1:rects.append((left,top,width,height))
-            return any(left-32<=x<=left+width+32 and top-24<=y<=top+height+24
-                       for left,top,width,height in rects)
+            points=[(x,y)]
+            if 'start_x' in event and 'start_y' in event:points.append((float(event['start_x']),float(event['start_y'])))
+            if rects:
+                return any(left-32<=px<=left+width+32 and top-24<=py<=top+height+24
+                           for left,top,width,height in rects for px,py in points)
+            element=(selected or {}).get('element_bounds') or []
+            if (selected or {}).get('selection_verified') and event.get('selection_gesture') and len(element)==4:
+                left,top,width,height=map(float,element)
+                return any(left<=px<=left+width and top<=py<=top+height for px,py in points)
+            return False
         except (TypeError,ValueError):return False
 
     def _text_selection_checked(self,result):
         self._selection_probe_busy=False
+        self.selection_diagnostics.update({k:result[k] for k in ('elapsed_ms','text_length','rectangle_values','error_type') if k in result})
+        if self._pending_selection_event is not None:
+            event=self._pending_selection_event;self._pending_selection_event=None
+            self._selection_candidate(event);return
         sequence=result.get('sequence')
         if sequence!=self.selection_capture_sequence or not self.selection_enabled or self.capture is not None or self._capture_pending:return
         if not result.get('valid'):
-            self.last_selection_status='no_text_selection';return
+            self.last_selection_status='no_text_selection'
+            event=result.get('event') or {};selected=result.get('selected') or {}
+            if not self._selection_copy.busy and self._compat_selection_allowed(event,selected):
+                self.last_selection_status='compatibility_reading'
+                self._compat_candidate=(sequence,event)
+                self._selection_copy.read(event['hwnd'],passive=True)
+            return
         self.last_selection_status='capturing'
         event=result.get('event',{});selected=result.get('selected',{})
         # Read-only text was confirmed; capture after compositor has removed the
         # previous toolbar. No keyboard/clipboard/focus mutation is involved.
         QTimer.singleShot(45,lambda:self._cache_selection(event,sequence,selected))
 
+    @staticmethod
+    def _compat_selection_allowed(event,selected):
+        if QApplication.platformName()=='offscreen' or not event.get('selection_gesture') or selected.get('password'):return False
+        if not selected.get('source_checked'):return False
+        user=ctypes.windll.user32;user.GetForegroundWindow.restype=ctypes.wintypes.HWND
+        hwnd=event.get('hwnd',0)
+        if user.GetForegroundWindow()!=hwnd:return False
+        name=ctypes.create_unicode_buffer(256)
+        user.GetClassNameW.argtypes=[ctypes.wintypes.HWND,ctypes.wintypes.LPWSTR,ctypes.c_int]
+        user.GetClassNameW(hwnd,name,256)
+        return name.value in ('Chrome_WidgetWin_1','Notepad','Notepad++','OpusApp','AcrobatSDIWindow')
+
+    def _compat_selection_ready(self,result):
+        candidate=self._compat_candidate;self._compat_candidate=None
+        if not candidate:return
+        sequence,event=candidate
+        if sequence!=self.selection_capture_sequence or not self.selection_enabled:return
+        text=str(result.get('text','')).strip()
+        if not result.get('ok') or not text:
+            self.last_selection_status='no_text_selection';return
+        self.selection_diagnostics.update(reader='clipboard_restored',text_length=len(text))
+        self._cache_selection(event,sequence,dict(text=text,context=text))
+
     def _cache_selection(self,event,sequence,selected=None):
         if sequence!=self.selection_capture_sequence or not self.selection_enabled or self._capture_pending or self.capture is not None:return
+        selected=selected or {}
+        payload=dict(text=str(selected.get('text','')).strip(),context=str(selected.get('context',''))[:6000],
+                     source_hwnd=event.get('hwnd'),selection_gesture=True)
         try:
+            selected=selected or {}
+            cached=self._cached_selection
+            if (event.get('right_click') and cached and cached['source_hwnd']==event.get('hwnd')
+                    and cached['text']==str(selected.get('text','')).strip()):
+                from ui.selection_snapshot import logical_point
+                self.selection_verified.emit(dict(valid=True,sequence=sequence,payload=dict(cached),
+                    point=logical_point(event),auto=event.get('auto_explain',False)))
+                return
             from ui.selection_snapshot import snapshot
             pixmap,point,detail=snapshot(event)
-            selected=selected or {}
             payload=dict(text=str(selected.get('text','')).strip(),context=str(selected.get('context',''))[:6000],
                          image_url=image_uri(pixmap),focus_image_url=image_uri(detail),
                          source_hwnd=event.get('hwnd'),selection_gesture=True)
+            self._cached_selection=dict(payload)
             self.selection_verified.emit(dict(valid=True,sequence=sequence,payload=payload,
                                                point=point,auto=event.get('auto_explain',False)))
         except Exception as exc:
-            self.last_selection_status='capture_failed'
-            if event.get('auto_explain'):self.pet._show_agent_bubble('未取得选区画面：'+str(exc))
+            if payload.get('text'):
+                from ui.selection_snapshot import logical_point
+                self.selection_verified.emit(dict(valid=True,sequence=sequence,payload=payload,
+                    point=logical_point(event),auto=event.get('auto_explain',False)))
+            else:self.last_selection_status='capture_failed'
 
     def _selection_verified(self,result):
         self._selection_probe_busy=False
@@ -378,6 +462,11 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
     def _selected_action(self,mode,value):
         # Everything needed was cached while the user was selecting text.
         self._generation+=1;self.active=False
+        if mode=='analyze' and not value.get('image_url'):
+            self.begin('region_ask');return
+        if mode=='explain' and value.get('text'):
+            self.last_selection_status='question_sent'
+            self._popup().load(value['text'],value.get('context',''),True,mode=mode);return
         if mode in ('explain','analyze') and value.get('image_url'):
             self.last_selection_status='question_sent'
             self._popup().load_selection_image(value['image_url'],mode,value.get('focus_image_url'));return
@@ -409,6 +498,8 @@ class ScreenTools(QObject,QAbstractNativeEventFilter):
 
     def stop(self):
         self._generation+=1
+        self._pending_selection_event=None;self._cached_selection=None
+        self._selection_copy.stop();self._compat_candidate=None
         self.selection_capture_sequence+=1
         self.watcher.stop();self.selection_bar.dismiss()
         for ident in self.hotkeys:ctypes.windll.user32.UnregisterHotKey(None,ident)

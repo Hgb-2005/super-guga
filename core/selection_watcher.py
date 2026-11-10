@@ -15,6 +15,7 @@ class SelectionWatcher(QObject):
     candidate=pyqtSignal(object)
     def __init__(self,parent=None):
         super().__init__(parent);self.handle=None;self.queue=deque(maxlen=2);self.down=None;self.last_up=None
+        self.right_down=None
         self.timer=QTimer(self);self.timer.setInterval(40);self.timer.timeout.connect(self.flush)
 
     def start(self):
@@ -55,6 +56,18 @@ class SelectionWatcher(QObject):
                         ctypes.windll.user32.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
                         if hwnd and pid.value!=os.getpid():self.queue.append(dict(kind='selection',hwnd=int(hwnd),x=x,y=y,start_x=self.down[0] if self.down else x,start_y=self.down[1] if self.down else y,selection_gesture=True))
                     self.down=None;self.last_up=(x,y,t)
+                elif message==0x0204:  # right button down: remember the document, not its later menu
+                    user=ctypes.windll.user32
+                    under=user.WindowFromPoint(wintypes.POINT(x,y))
+                    hwnd=user.GetAncestor(under,2) if under else user.GetForegroundWindow()
+                    self.right_down=hwnd
+                elif message==0x0205:
+                    hwnd=self.right_down;self.right_down=None
+                    pid=wintypes.DWORD()
+                    if hwnd:ctypes.windll.user32.GetWindowThreadProcessId(hwnd,ctypes.byref(pid))
+                    if hwnd and pid.value!=os.getpid():
+                        self.queue.append(dict(kind='selection',hwnd=int(hwnd),x=x,y=y,
+                                               selection_gesture=True,right_click=True))
         except Exception:pass
         return ctypes.windll.user32.CallNextHookEx(self.handle,code,message,pointer)
 
@@ -63,7 +76,7 @@ class SelectionWatcher(QObject):
             value=self.queue.pop();self.queue.clear();self.candidate.emit(value)
 
     def stop(self):
-        self.timer.stop();self.queue.clear()
+        self.timer.stop();self.queue.clear();self.down=None;self.right_down=None
         if self.handle:
             ctypes.windll.user32.UnhookWindowsHookEx.argtypes=[ctypes.c_void_p]
             ctypes.windll.user32.UnhookWindowsHookEx(self.handle);self.handle=None

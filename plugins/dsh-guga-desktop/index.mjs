@@ -1,0 +1,95 @@
+// Native DSH plugin: one official MCP connection for actions and host events.
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+import {join} from 'node:path';
+import {randomUUID} from 'node:crypto';
+
+export const name='guga-desktop';
+export const inject=['tools'];
+
+export function projectEvent(session,event,previous={}) {
+  if(event.surfaceOp && event.surfaceOp!=='append')return null;
+  const data=event.data??{};
+  const next={...previous,session_id:String(session.id),event_id:randomUUID(),kind:event.type};
+  if(session.header?.parentSession)next.parent_session_id=String(session.header.parentSession);
+  switch(event.type){
+    case 'user/message':
+      next.goal=(Array.isArray(data.content)?data.content:[]).filter(x=>x.type==='text').map(x=>x.text).join('\n').slice(0,500);
+      return next;
+    case 'turn/start':return {...next,state:'running',turn:data.turn,step:0,tool:'',summary:'DSH 已开始处理这个会话的任务'};
+    case 'step/start':return {...next,state:'running',step:data.step,summary:'DSH 正在处理第 '+String(data.step)+' 步'};
+    case 'tool/call':return {...next,state:'running',tool:String(data.name??'').slice(0,100),summary:'DSH 正在调用工具：'+String(data.name??'').slice(0,100)};
+    case 'tool/result':return {...next,state:'running',summary:data.message?.isError?'上一次工具返回了错误，DSH 尚未结束任务':'上一次工具已经返回；DSH 仍在处理任务'};
+    case 'assistant/message':{
+      const visible=(data.message?.content??[]).filter(x=>x.type==='text').map(x=>x.text).join('\n').trim();
+      return visible?{...next,state:'running',summary:'DSH 的公开答复：'+visible.slice(0,400)}:null;
+    }
+    case 'turn/end':{
+      const reason=String(data.reason??'');
+      const state=/error|fail/i.test(reason)?'failed':/abort|cancel|interrupt/i.test(reason)?'cancelled':/suspend|input|yield/i.test(reason)?'waiting':'finished';
+      return {...next,state,reason,summary:'DSH 本轮已结束（'+(reason||'已收到结束事件')+'）。'+
+        (previous.summary?.startsWith('DSH 的公开答复：')?previous.summary:'任务是否完成以最终答复和工具结果为准')};
+    }
+    default:return null; // Never forward reasoning, raw tool output, audio or full transcripts.
+  }
+}
+
+export async function apply(ctx,config={}){
+  if(!config.projectRoot||!config.python||!config.runtimeAnchor)throw new Error('咕嘎插件缺少本机连接配置，请运行 setup_dsh_guga_plugin.py --native');
+  const require=createRequire(config.runtimeAnchor);
+  const load=async id=>import(pathToFileURL(require.resolve(id)).href);
+  const {Client}=await load('@modelcontextprotocol/client');
+  const {StdioClientTransport}=await load('@modelcontextprotocol/client/stdio');
+  const {createMcpToolDefinition}=await load('@deepseek-ai/dsh-mcp-client');
+  const client=new Client({name:'dsh-guga-desktop',version:'0.1.0'});
+  const transport=new StdioClientTransport({command:config.python,args:[join(config.projectRoot,'tools/guga_mcp_server.py'),'--plugin-events'],cwd:config.projectRoot,
+    env:config.pipeName?{GUGA_MCP_PIPE:config.pipeName}:undefined});
+  let disposed=false;
+  ctx.effect(()=>()=>{disposed=true;return client.close();});
+  await client.connect(transport);
+  const definitions=(await client.listTools()).tools;
+  for(const tool of definitions){
+    if(tool.name==='dsh_host_event')continue; // Host-only reporting; never a model-facing action.
+    const dispose=ctx.tools.register(createMcpToolDefinition(ctx,{
+      name:'mcp__guga__'+tool.name,rawName:tool.name,description:tool.description??'',inputSchema:tool.inputSchema,
+      outputSchema:tool.outputSchema,taskRequired:false,
+      call:(args,execution)=>client.callTool({name:tool.name,arguments:args},{signal:execution.signal,timeout:50000,toolDefinition:tool})
+    }));
+    ctx.effect(()=>dispose);
+  }
+  const sessions=new Map(),pending=new Map();
+  let sending=false;
+  const flush=async()=>{
+    if(sending||disposed)return;
+    sending=true;
+    try{
+      for(const [key,value] of pending){
+        pending.delete(key);
+        try{
+          const result=await client.callTool({name:'dsh_host_event',arguments:value},{timeout:3000});
+          if(result.isError)ctx.logger?.warn?.('咕嘎没有接受本次进度回执');
+        }catch{ctx.logger?.warn?.('咕嘎暂未连接，进度未送达；不会自动重放电脑操作');}
+      }
+    }finally{sending=false;}
+  };
+  const queue=value=>{
+    const key=value.session_id+':'+String(value.turn??'')+':'+(value.state==='running'?'progress':value.kind);
+    pending.set(key,value);
+    while(pending.size>32)pending.delete(pending.keys().next().value);
+    void flush();
+  };
+  queue({session_id:'_host_',kind:'host/heartbeat',event_id:randomUUID()});
+  ctx.on('session/event',(session,event)=>{
+    const previous=sessions.get(String(session.id))??{};
+    const next=projectEvent(session,event,previous);
+    if(!next)return;
+    sessions.set(String(session.id),next);
+    while(sessions.size>16)sessions.delete(sessions.keys().next().value);
+    queue(next);
+  });
+  const heartbeat=setInterval(()=>{
+    queue({session_id:'_host_',kind:'host/heartbeat',event_id:randomUUID()});
+    for(const value of sessions.values())if(value.state==='running')queue({...value,kind:'heartbeat',event_id:randomUUID()});
+  },15000);
+  heartbeat.unref?.();ctx.effect(()=>()=>clearInterval(heartbeat));
+}

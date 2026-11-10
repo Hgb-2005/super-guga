@@ -192,8 +192,8 @@ class AIChatEngine(QObject):
     @staticmethod
     def _load_config():
         try:
-            with open(_CONFIG_PATH, 'r', encoding='utf-8-sig') as f:
-                return json.load(f)
+            from core.model_settings import load_config
+            return load_config(_CONFIG_PATH)
         except Exception:
             return {}
 

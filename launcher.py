@@ -114,7 +114,7 @@ def main():
                 ret = ctypes.windll.shell32.ShellExecuteW(
                     None, 'runas', sys.executable,
                     __import__('subprocess').list2cmdline(([] if getattr(sys,'frozen',False) else [os.path.join(ROOT, 'launcher.py')])+
-                        [arg for arg in sys.argv[1:] if arg in ('--voice','--bg-live')]), ROOT, 1)
+                        [arg for arg in sys.argv[1:] if arg in ('--voice','--realtime-voice','--bg-live','--daily-plan')]), ROOT, 1)
                 # ShellExecuteW 返回 > 32 表示成功; <= 32 表示失败(用户拒绝UAC等)
                 if ret and ret > 32:
                     sys.exit(0)  # 新提权进程已启动, 当前进程退出

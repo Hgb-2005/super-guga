@@ -49,6 +49,17 @@ class FastCommandTests(unittest.TestCase):
         launch.assert_called_once_with(['C:\\Browser\\msedge.exe','about:blank'])
         association.assert_not_called()
 
+    def test_default_browser_launch_preserves_registered_handler_arguments(self):
+        browser=Path('C:/Doubao/Doubao.exe')
+        arguments=[str(browser),'--single-argument','about:blank']
+        with patch('core.browser_launch.default_executable',return_value=browser), \
+             patch('core.browser_launch.launch_arguments',return_value=arguments) as build, \
+             patch('core.fast_commands.subprocess.Popen') as launch:
+            result=execute(match('打开浏览器'))
+        build.assert_called_once_with(browser,'about:blank')
+        launch.assert_called_once_with(arguments)
+        self.assertTrue(result['launch_requested'])
+
     def test_stop_and_url_are_parsed_without_llm(self):
         self.assertEqual(match('停止对话')['action'],'stop_call')
         self.assertEqual(match('打开 github')['target'],'https://github.com')

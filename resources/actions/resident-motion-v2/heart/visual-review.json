@@ -1,0 +1,27 @@
+{
+  "schema": 2,
+  "status": "approved",
+  "reviewer": "Codex: source contact and real renderer 30fps review 2026-11-08",
+  "playback": "once",
+  "frames_sha256": "0792927a0d897ad98cb02f6b07ad205fb9939b5ff2e4902fc35ca53f2a6fb2fb",
+  "checks": {
+    "identity": true,
+    "continuous_motion": true,
+    "no_ghosts": true,
+    "anatomy": true,
+    "entry_exit_transition": true,
+    "loop_seam": false
+  },
+  "runtime_review": {
+    "renderer_sha256": "dad478fea2720502e0b49465e7df1565e2189a4d1abe84d2b95d05b88505e720",
+    "contact": "runtime/resident-motion-20261108/after/contact.png",
+    "video": "runtime/resident-motion-20261108/after.mp4",
+    "settled_exit": true,
+    "full_figure_alpha_blending": false
+  },
+  "notes": [
+    "Preserved supplied character and native source motion; common body scale, padded canvas and aligned feet.",
+    "Natural end retains the settled source pose; explicit speech/drag/task overrides it immediately.",
+    "Expression differences between supplied videos remain; no claim of newly generated cinematic transitions."
+  ]
+}

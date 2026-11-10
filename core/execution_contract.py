@@ -5,7 +5,8 @@ INPUT_ACTIONS={"click","double_click","drag","scroll","hotkey","type","fill","ed
 VERIFY_ACTIONS={"observe","accessibility","uia_read"}
 ACTION_WORDS=("打开","启动","关闭","读取","修改","写入","保存","运行","安装","下载",
               "删除","移动","复制","重命名","上传","提交","点击","输入","执行","修复",
-              "测试","检查窗口","截屏","看屏幕","整理文件","创建文件","发送","发一段","发一句")
+              "测试","检查窗口","截屏","看屏幕","整理文件","创建文件","发送","发一段","发一句",
+              "勾选","打勾","打卡","设置每日计划","每天提醒","记住","忘记记忆","更正记忆")
 # Questions about how/why something works are not action requests even when they
 # mention an action word ("下载速度慢是什么原因"). A real request keeps an
 # explicit imperative marker, so "能不能帮我打开浏览器" still executes.
@@ -22,6 +23,11 @@ def _question_like(text):
 
 def requires_execution(prompt):
     text=str(prompt or "").lower().strip()
+    # Complex routine declarations/edits go to the agent with plan tools, rather
+    # than a Q&A worker that cannot persist them. Simple ones use the local parser.
+    routine=re.match(r'^(?:咕嘎[，,\s]*)?(?:(?:请|帮我)?记住[：:，,\s]*)?(?:这是)?(?:我的(?:每日计划|每日清单|日常安排)|我(?:以后|从现在起|接下来)?(?:每天|每日|每周))',text)
+    if routine and not _question_like(text) and not re.search(r'不要记|别记|不用记|不保存|别保存|不要保存|如果|假如|比如|例如|假设|[“”「」『』"]',text):return True
+    if re.search(r'每日计划|每日清单|日常安排',text) and re.search(r'改成|改为|改到|改一下|取消|移除',text) and not _question_like(text):return True
     if not any(word in text for word in ACTION_WORDS):return False
     value=re.sub(r'^(?:小?咕嘎[，,\s]*)?(?:(?:请你?|麻烦你?|帮我|给我|替我|我要你|你能不能|你能|你可以|你可不可以|能不能|能否|可不可以|可以)[，,\s]*)*','',text)
     if re.match(r'^(?:解释|讲解|告诉我|教我).*(?:如何|怎么|为什么|是什么|什么意思)',value):return False

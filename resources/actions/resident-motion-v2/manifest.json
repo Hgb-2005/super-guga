@@ -1,0 +1,34 @@
+{
+  "schema": 2,
+  "padded_canvas": true,
+  "clips": [
+    {
+      "name": "doze",
+      "frames": "doze/frames",
+      "native_fps": 24.0,
+      "reference_width": 245,
+      "weight": 0.8
+    },
+    {
+      "name": "heart",
+      "frames": "heart/frames",
+      "native_fps": 24.0,
+      "reference_width": 245,
+      "weight": 1.0
+    },
+    {
+      "name": "pout",
+      "frames": "pout/frames",
+      "native_fps": 24.0,
+      "reference_width": 245,
+      "weight": 1.0
+    },
+    {
+      "name": "laugh",
+      "frames": "laugh/frames",
+      "native_fps": 24.0,
+      "reference_width": 245,
+      "weight": 1.0
+    }
+  ]
+}

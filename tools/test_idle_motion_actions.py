@@ -32,7 +32,7 @@ class IdleMotionTests(unittest.TestCase):
         for name in ('pout','laugh'):
             clip=self.anim.clips['idle:'+name]
             self.assertEqual(clip['fps'],24.)
-            self.assertEqual(len(clip['frames']),241)
+            self.assertEqual(len(clip['frames']),260 if name=='laugh' else 241)
             self.assertTrue(clip['one_shot_only']);self.assertFalse(clip['loop'])
         # Every clip must share one canvas, otherwise the pet jumps in size.
         for name in ('doze','heart','pout','laugh'):
@@ -40,8 +40,9 @@ class IdleMotionTests(unittest.TestCase):
             sizes={(pm.width(),pm.height()) for pm in clip['frames']}
             self.assertEqual(len(sizes),1, name)
             width,height=next(iter(sizes))
-            self.assertLessEqual(abs(width-self.anim._dw),1)
-            self.assertLessEqual(abs(height-self.anim._dh),1)
+            self.assertEqual((width,height),(320,416))
+            self.assertLessEqual(width,self.anim.width)
+            self.assertLessEqual(height,self.anim.height)
 
     def test_startup_does_not_decode_hundreds_of_frames(self):
         for name in ('doze','heart'):

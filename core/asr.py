@@ -111,6 +111,7 @@ class ASRRecorder:
         self.device = None
         self._frame_count = 0
         self._peak = 0
+        self.level = 0.
         self._start_time = 0.0
 
     @property
@@ -159,6 +160,7 @@ class ASRRecorder:
         self.device = _pick_input_device()
         self._frame_count = 0
         self._peak = 0
+        self.level = 0.
         import time as _time
         self._start_time = _time.time()
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
@@ -196,6 +198,7 @@ class ASRRecorder:
         try:
             arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
             peak = float(np.abs(arr).max()) if arr.size else 0.0
+            self.level = min(1.,float(np.sqrt(np.mean(arr*arr)))/3500.) if arr.size else 0.
             if peak > self._peak:
                 self._peak = peak
             if peak > 0:

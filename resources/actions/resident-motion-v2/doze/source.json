@@ -1,0 +1,23 @@
+{
+  "name": "doze",
+  "frames": 239,
+  "native_fps": 24.0,
+  "canvas": [
+    320,
+    416
+  ],
+  "body_span": 304.5,
+  "reference_body_span": 304.3612334801762,
+  "baseline": 408,
+  "source": "runtime\\idle-action-review-20261102\\doze-v1\\frames",
+  "scale": 0.6689257878685192,
+  "offset": [
+    19,
+    38
+  ],
+  "edge_clipped_frames": 0,
+  "frame_sha256": "2aa689588dec4d9ae862a4ea68d9c2415cd1ff563ae391fe68aa949a8f95666a",
+  "source_pixels_preserved": true,
+  "reference_width": 245,
+  "native_motion": true
+}

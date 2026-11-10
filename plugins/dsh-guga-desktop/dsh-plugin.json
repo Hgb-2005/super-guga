@@ -1,0 +1,1 @@
+{"id":"dsh-guga-desktop","name":"咕嘎","version":"0.1.0","manifestVersion":"0.15","facets":{"host":{"entry":"index.mjs","apiVersion":"v1alpha1"}},"permissions":[],"contributes":{"commands":[]}}

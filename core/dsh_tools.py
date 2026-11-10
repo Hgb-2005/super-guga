@@ -19,18 +19,9 @@ class DshTools:
         agent=self.panel.agent; ticket=mgr.state.get('ticket_id')
         if name=='personal_memory':
             memory=self.panel.memory; owner=mgr.state['agent_id']; action=args.get('action')
-            if action=='recall':return dict(ok=True,memories=memory.recall(owner,args.get('query',''),8))
-            if action=='list':return dict(ok=True,facts=memory.facts(owner))
-            if action=='remember':
-                text=str(args.get('content',''))
-                from core.agent_memory import safe_text
-                if safe_text(text)!=text.strip():raise ValueError('记忆不能包含凭据或超长文本')
-                memory.remember(owner,text,kind='preference',importance=3)
-                return dict(ok=True,saved=True)
-            if action=='forget':return dict(ok=True,**memory.forget(owner,args['id']))
             if action=='propose_lesson':return dict(ok=True,**mgr.archive.propose(owner,ticket,args.get('content','')))
             if action=='lessons':return dict(ok=True,lessons=mgr.archive.lessons(owner))
-            raise ValueError('未知记忆操作')
+            return self.panel.runtime.companion_memory.execute(owner,mgr.state.get('conversation_id'),args)
         if name=='task_report':
             state=args.get('state','progress')
             summary=str(args.get('summary',''))[:3000]

@@ -60,7 +60,11 @@ def main():
         QTimer.singleShot(400, lambda:window._multi_agent.summon('002'))
     # Only an explicit launch flag starts capture; normal startup stays quiet.
     if '--voice' in sys.argv:
+        QTimer.singleShot(300, window._open_voice_recording)
+    if '--realtime-voice' in sys.argv:
         QTimer.singleShot(300, window._open_agent_voice)
+    if '--daily-plan' in sys.argv:
+        QTimer.singleShot(300, window._show_daily_plan)
     if '--bg-live' in sys.argv:
         QTimer.singleShot(300, window._open_bg_live)
 

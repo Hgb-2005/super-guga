@@ -1,0 +1,45 @@
+{
+  "name": "laugh",
+  "frames": 260,
+  "native_fps": 24.0,
+  "canvas": [
+    320,
+    416
+  ],
+  "body_span": 304.0,
+  "reference_body_span": 304.3612334801762,
+  "baseline": 408,
+  "source": "resources\\actions\\idle-motion\\laugh\\frames",
+  "scale": 1.1796947034115357,
+  "offset": [
+    21,
+    -4
+  ],
+  "edge_clipped_frames": 0,
+  "frame_sha256": "22c5476f2deb143d901e8fd36ca079298693910250b2e889a9a16b5c4dcd7fd8",
+  "source_pixels_preserved": true,
+  "reference_width": 245,
+  "native_motion": true,
+  "source_frames": 241,
+  "settling_source_indices": [
+    18,
+    17,
+    16,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0
+  ]
+}

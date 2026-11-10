@@ -132,6 +132,9 @@ def main():
     parser.add_argument('--commands',action='store_true')
     parser.add_argument('--live-voice',action='store_true',help='explicitly use confirmed free voice quota and synthetic speech')
     parser.add_argument('--browser',choices=('edge','default'),default='edge')
+    parser.add_argument('--desktop',action='store_true',help='exercise the shared desktop single-step executor')
+    parser.add_argument('--single-step-only',action='store_true',help='isolate command dispatch from background perception sampling')
+    parser.add_argument('--visual',action='store_true',help='one configured vision lookup on a local canvas fixture')
     args=parser.parse_args()
     from playwright.sync_api import sync_playwright
     from core.uia_backend import UIABackend
@@ -150,6 +153,14 @@ def main():
         <input id="qa-input" aria-label="验收输入"><button id="qa-button" onclick="window.clicks=(window.clicks||0)+1;document.querySelector('#status').textContent='已执行 '+window.clicks">执行测试</button>
         <p id="status">待执行</p><div>'''+''.join('<button>占位按钮'+str(n)+'</button>' for n in range(100))+'''</div>
         <div style="height:1800px"></div><button id="deep">底部测试</button></body></html>'''
+        if args.visual:
+            html=html.replace('<p id="status">','''<canvas id="visual-target" width="480" height="100" aria-hidden="true"></canvas>
+            <script>const canvas=document.querySelector('#visual-target'),ctx=canvas.getContext('2d');
+            ctx.fillStyle='#1479ef';ctx.fillRect(20,10,190,70);ctx.fillStyle='#f29424';ctx.fillRect(250,10,190,70);
+            ctx.font='24px sans-serif';ctx.fillStyle='white';ctx.fillText('蓝色开始',65,55);ctx.fillText('橙色开始',290,55);
+            canvas.onclick=e=>{const r=canvas.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+                if(x>=20&&x<=210&&y>=10&&y<=80)window.blueClicks=(window.blueClicks||0)+1;
+                if(x>=250&&x<=440&&y>=10&&y<=80)window.orangeClicks=(window.orangeClicks||0)+1;};</script><p id="status">''')
         Path(tmp,'index.html').write_text(html,encoding='utf-8')
         handler=functools.partial(Handler,directory=tmp)
         server=http.server.ThreadingHTTPServer(('127.0.0.1',0),handler)
@@ -170,9 +181,11 @@ def main():
                     if len(windows)!=1:raise RuntimeError('Fixture window not uniquely identified')
                     hwnd=windows[0]['hwnd'];control=ComputerControl(SimpleNamespace(enabled=True))
                     control.execute(dict(action='focus',hwnd=hwnd))
-                    result['local_perception']=perception_round(hwnd)
-                    result['checks'].append(result['local_perception']['ok'])
-                    if not result['local_perception']['ok']:raise RuntimeError('Local perception fixture conditions failed; no actions sent')
+                    if not args.single_step_only:
+                        result['local_perception']=perception_round(hwnd)
+                        result['checks'].append(result['local_perception']['ok'])
+                        if not result['local_perception']['ok']:raise RuntimeError('Local perception fixture conditions failed; no actions sent')
+                    else:result['local_perception']=dict(skipped=True,reason='single_step_isolation')
                     t=time.perf_counter();backend=UIABackend();result['load_ms']=round((time.perf_counter()-t)*1000,2)
                     for _ in range(3):
                         t=time.perf_counter();snapshot=backend.snapshot(hwnd,240)
@@ -190,8 +203,11 @@ def main():
                     backend.act(hwnd,'invoke',name='执行测试',control_type='Button')
                     result['checks'].append(page.evaluate('window.clicks')==1)
                     result['node_count']=len(snapshot['elements'])
-                    if args.commands or args.live_voice:
-                        from core.browser_interaction import BrowserInteraction
+                    if args.commands or args.live_voice or args.visual:
+                        if args.desktop:
+                            from core.desktop_interaction import DesktopInteraction as BrowserInteraction
+                        else:
+                            from core.browser_interaction import BrowserInteraction
                         from core.fast_commands import match
                         interaction=BrowserInteraction();interaction.warmup()
                         result['command_ms']=[]
@@ -214,6 +230,16 @@ def main():
                             result['checks'].append(receipt.get('ok') is True)
                         result['checks'].append(page.input_value('#qa-input')=='自然说法验收')
                         result['checks'].append(page.evaluate('window.clicks')==3)
+                        if args.visual:
+                            if not args.desktop:raise RuntimeError('Visual probe requires --desktop')
+                            receipt=interaction.execute(match('点击蓝色开始'),hwnd=hwnd)
+                            page.wait_for_timeout(100)
+                            result['visual']=dict(ok=receipt.get('ok'),source=receipt.get('source'),
+                                dispatch_ms=receipt.get('dispatch_ms'),error=receipt.get('error'),
+                                blue_clicks=page.evaluate('window.blueClicks||0'),orange_clicks=page.evaluate('window.orangeClicks||0'))
+                            result['checks'].append(receipt.get('ok') is True and receipt.get('source')=='visual'
+                                and result['visual']['blue_clicks']==1 and result['visual']['orange_clicks']==0)
+                            page.screenshot(path=str(folder/(args.label+'.png')))
                         if args.live_voice:
                             result['voice']=voice_round(page,interaction,hwnd)
                             result['checks'].append(result['voice']['ok'])

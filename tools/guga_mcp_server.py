@@ -9,7 +9,7 @@ from launcher import _prepare_qt
 _prepare_qt()
 from PyQt5.QtCore import QCoreApplication
 from PyQt5.QtNetwork import QLocalSocket
-from core.mcp_contract import pipe_name, self_tools, dsh_tools
+from core.mcp_contract import pipe_name, self_tools, dsh_tools,plugin_tools
 
 VERSIONS = ('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
 
@@ -21,10 +21,11 @@ def invoke(name, arguments):
         return dict(ok=False, error='咕嘎尚未运行，请先启动桌宠')
     try:
         job=os.environ.get('GUGA_DSH_JOB') if '--dsh-tools' in sys.argv else None
-        socket.write((json.dumps(dict(name=name, arguments=arguments,dsh_job=job), ensure_ascii=False) + '\n').encode('utf-8'))
+        socket.write((json.dumps(dict(name=name, arguments=arguments,dsh_job=job,
+            plugin_event=name=='dsh_host_event' and '--plugin-events' in sys.argv), ensure_ascii=False) + '\n').encode('utf-8'))
         socket.flush()
         socket.waitForBytesWritten(2000)
-        deadline=time.monotonic()+(140 if job else 8)
+        deadline=time.monotonic()+(140 if job else 45)
         while not socket.canReadLine():
             if time.monotonic()>=deadline or not socket.waitForReadyRead(1000) and socket.state()==QLocalSocket.UnconnectedState:
                 return dict(ok=False, error='咕嘎工具响应超时或连接已关闭；不要盲目重放输入')
@@ -37,7 +38,7 @@ def serve():
     app = QCoreApplication([])
     initialized = False
     negotiated = False
-    definitions=dsh_tools() if '--dsh-tools' in sys.argv else self_tools()
+    definitions=plugin_tools() if '--plugin-events' in sys.argv else dsh_tools() if '--dsh-tools' in sys.argv else self_tools()
     for line in sys.stdin:
         request = None
         try:
@@ -73,7 +74,7 @@ def serve():
                     header,data=picture.split(',',1)
                     blocks.append(dict(type='image',mimeType=header[5:].split(';')[0],data=data))
                 result = dict(content=blocks,
-                              isError=not value.get('ok', False))
+                              isError=not value.get('ok', False) or (isinstance(value.get('result'),dict) and value['result'].get('ok') is False))
             else:
                 response = dict(jsonrpc='2.0', id=request['id'], error=dict(code=-32601, message='Method not found'))
                 print(json.dumps(response), flush=True)

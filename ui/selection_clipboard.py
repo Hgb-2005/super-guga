@@ -19,7 +19,7 @@ class SelectionCopy(QObject):
         super().__init__(parent);self.busy=False;self.saved=None
         self.timer=QTimer(self);self.timer.setInterval(40);self.timer.timeout.connect(self.poll)
 
-    def read(self,hwnd,restore_source=False):
+    def read(self,hwnd,restore_source=False,passive=False):
         if self.busy:return
         user=ctypes.windll.user32;user.GetForegroundWindow.restype=wintypes.HWND
         user.IsWindow.argtypes=[wintypes.HWND]
@@ -30,6 +30,8 @@ class SelectionCopy(QObject):
         foreground=user.GetForegroundWindow();pid=wintypes.DWORD()
         if foreground:user.GetWindowThreadProcessId(foreground,ctypes.byref(pid))
         if foreground!=hwnd:
+            if passive:
+                self.done.emit(dict(ok=False,error='选词窗口已切换，跳过兼容读取'));return
             # An explicit click on our selection bar authorizes returning to its
             # recorded source, including when another selection bar took focus.
             # Other callers still cannot move focus away from an unrelated app.
@@ -49,7 +51,7 @@ class SelectionCopy(QObject):
         from core.computer_control import _send_keys
         info=GuiInfo();info.size=ctypes.sizeof(info)
         try:
-            if user.GetGUIThreadInfo(0,ctypes.byref(info)) and info.flags & (4|16):
+            if not passive and user.GetGUIThreadInfo(0,ctypes.byref(info)) and info.flags & (4|16):
                 _send_keys([27]);QTimer.singleShot(80,self.copy)
             else:self.copy()
         except Exception as exc:self.fail(str(exc))

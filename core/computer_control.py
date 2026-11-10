@@ -44,6 +44,23 @@ def _send_keys(values):
         for code in reversed(values):send(code,True)
 
 
+def _key_values(keys):
+    """Shared key-name resolver for hotkey and press."""
+    parts=str(keys or '').lower().replace(' ','').split('+')
+    aliases={'return':'enter','escape':'esc','control':'ctrl','control_l':'ctrl','control_r':'ctrl',
+        'ctrl_l':'ctrl','alt_l':'alt','alt_r':'alt','shift_l':'shift','shift_r':'shift','super_l':'win','deleteforward':'delete',
+        '回车':'enter','发送':'enter','确认':'enter','确定':'enter','提交':'enter',
+        '退格':'backspace','删除':'delete','空格':'space','制表':'tab','取消':'esc','退出':'esc'}
+    parts=[aliases.get(k.strip(),k.strip()) for k in parts]
+    codes={'ctrl':17,'alt':18,'shift':16,'win':91,'enter':13,'tab':9,'esc':27,'backspace':8,'delete':46,
+        'up':38,'down':40,'left':37,'right':39,'home':36,'end':35,'space':32}
+    values=[codes[k] if k in codes else ord(k.upper()) if len(k)==1 and k.isascii()
+            else 111+int(k[1:]) if k.startswith('f') and k[1:].isdigit() and 1<=int(k[1:])<=12 else 0 for k in parts]
+    if not values or len(values)>5 or 0 in values:
+        raise ValueError('不支持的组合键；请用ctrl/alt/shift、enter、tab、esc、home、end及字母，例如ctrl+g、enter、ctrl+shift+end')
+    return values
+
+
 class ComputerControl:
     def __init__(self, access=None):
         from core.desktop_access import DesktopAccess
@@ -76,6 +93,19 @@ class ComputerControl:
         if cancel.is_set():raise RuntimeError('已停止屏幕操作')
         import win32gui
         action=args.get('action')
+        if action=='press':
+            # Models naturally say "press enter" to send a message. Treat it as a
+            # single keystroke instead of rejecting it as an unknown screen action.
+            keys=str(args.get('keys') or args.get('key') or args.get('text') or 'enter').strip() or 'enter'
+            args=dict(args,action='hotkey',keys=keys)
+            action='hotkey'
+        supported=('windows','editor_context','focus','observe','accessibility','uia','uia_read','uia_wait',
+                   'click','double_click','move','drag','scroll','hotkey','press','type','fill','editor_select_tail')
+        if action not in supported:
+            # Name the problem before any state checks: a wrong verb must not be
+            # reported as "observation id expired", which sends the model hunting
+            # for the wrong mistake.
+            raise ValueError('未知屏幕操作：'+str(action)[:40]+'；支持 '+'/'.join(supported))
         if action=='editor_context':
             import json,os
             from pathlib import Path
@@ -118,16 +148,29 @@ class ComputerControl:
         if action=='observe':
             from PIL import ImageGrab
             hwnd=int(args.get('hwnd') or win32gui.GetForegroundWindow())
-            if hwnd!=win32gui.GetForegroundWindow():raise ValueError('先 focus 目标窗口再观察，避免遮挡误认')
+            if not win32gui.IsWindow(hwnd):raise ValueError('窗口已关闭')
             rect=win32gui.GetWindowRect(hwnd)
             if rect[2]<=rect[0] or rect[3]<=rect[1]:raise ValueError('窗口没有可见区域')
-            frame=ImageGrab.grab(bbox=rect,all_screens=True).convert('RGB')
-            frame.thumbnail((1600,1200))
-            output=io.BytesIO();frame.save(output,format='JPEG',quality=78)
+            frame=None;source='window_render'
+            try:
+                # Ask the window to paint itself. A screen grab only works when the
+                # target is truly frontmost and unobscured; when it is not, the
+                # model ends up reading a different window and concludes the app
+                # never opened. Self-render is immune to that.
+                from core.quick_look import grab_window
+                frame=grab_window(hwnd)
+            except Exception:
+                source='screen_grab'
+                if hwnd!=win32gui.GetForegroundWindow():
+                    raise ValueError('这个窗口无法自绘，且当前不在前台；请先 focus 再观察，避免截到别的窗口') from None
+                frame=ImageGrab.grab(bbox=rect,all_screens=True).convert('RGB')
+            side=max(640,min(1600,int(args.get('max_side') or 1024)))
+            frame.thumbnail((side,side))
+            output=io.BytesIO();frame.save(output,format='JPEG',quality=72)
             token=uuid.uuid4().hex
             self.observation=dict(id=token,hwnd=hwnd,rect=rect,image_size=frame.size,time=time.monotonic())
             return dict(observation_id=token,hwnd=hwnd,title=win32gui.GetWindowText(hwnd),
-                desktop_rect=rect,image_size=frame.size,
+                desktop_rect=rect,image_size=frame.size,capture_source=source,
                 coordinates='默认传截图内的相对像素坐标，与image_size一致；执行器自动转换到桌面。仅coordinate_space=desktop时传桌面物理坐标。',
                 _image_url='data:image/jpeg;base64,'+base64.b64encode(output.getvalue()).decode())
         if action=='accessibility':
@@ -240,6 +283,18 @@ $r=$c.BoundingRectangle
             return self._uia().wait(hwnd,args.get('uia_timeout_ms',5000)/1000,ref=ref,name=name,
                 automation_id=automation_id,control_type=control_type,state=state,
                 expected=args.get('uia_expected',True))
+        if action in ('hotkey','press'):
+            # A keystroke has no coordinates, so it must not depend on a live
+            # screenshot id. Demanding one is what stranded the model at the
+            # final "press send" step, which then reported an unknown action.
+            keys=str(args.get('keys') or args.get('key') or args.get('text') or '').strip()
+            if not keys:raise ValueError('按键需要 keys，例如 enter、esc、ctrl+a')
+            values=_key_values(keys)
+            hwnd=int(win32gui.GetForegroundWindow() or 0)
+            if not hwnd:raise ValueError('没有前台窗口，按键未发送')
+            _send_keys(values)
+            return dict(input_sent=True,action='hotkey',keys=keys,needs_observe=True,
+                message='按键 '+keys+' 已发送；请 observe 核对结果，不要只凭按键判断成功')
         observed=self.observation
         if not observed or args.get('observation_id')!=observed['id'] or time.monotonic()-observed['time']>30:
             raise ValueError('观察 ID 已消耗或过期；先 observe 取得新 ID。若刚点击过输入框，只需用新 ID 执行 type，不要再次点击；也可一次 fill 完成定位与输入')
@@ -300,15 +355,7 @@ $r=$c.BoundingRectangle
             if not -20<=delta<=20:raise ValueError('滚动量需要-20到20')
             user.mouse_event(0x800,0,0,delta*120,0)
         elif action=='hotkey':
-            keys=str(args.get('keys','')).lower().split('+')
-            aliases={'return':'enter','escape':'esc','control':'ctrl','control_l':'ctrl','control_r':'ctrl',
-                'ctrl_l':'ctrl','alt_l':'alt','alt_r':'alt','shift_l':'shift','shift_r':'shift','super_l':'win','deleteforward':'delete'}
-            keys=[aliases.get(k.strip(),k.strip()) for k in keys]
-            codes={'ctrl':17,'alt':18,'shift':16,'win':91,'enter':13,'tab':9,'esc':27,'backspace':8,'delete':46,
-                'up':38,'down':40,'left':37,'right':39,'home':36,'end':35,'space':32}
-            values=[codes[k] if k in codes else ord(k.upper()) if len(k)==1 and k.isascii() else 111+int(k[1:]) if k.startswith('f') and k[1:].isdigit() and 1<=int(k[1:])<=12 else 0 for k in keys]
-            if not values or len(values)>5 or 0 in values:raise ValueError('不支持的组合键；请用ctrl/alt/shift、enter、tab、esc、home、end及字母，例如ctrl+g、enter、ctrl+shift+end')
-            _send_keys(values)
+            _send_keys(_key_values(str(args.get('keys',''))))
         elif action=='editor_select_tail':
             line=int(args.get('line',0))
             if not 1<=line<=200000:raise ValueError('需要有效的编辑器行号')
@@ -325,7 +372,9 @@ $r=$c.BoundingRectangle
         elif action=='type':
             text=str(args.get('text',''))
             if len(text)>4000:raise ValueError('单次输入最多4000字')
-            if '\n' in text and self._paste_multiline(text,observed['hwnd'],cancel):
+            if args.get('replace'):_send_keys([17,65])
+            if args.get('clear'):_send_keys([46])
+            if ('\n' in text or any(ord(c)>127 for c in text)) and self._paste_multiline(text,observed['hwnd'],cancel):
                 return dict(input_sent=True,action=action,needs_observe=True,message='多行文本已粘贴；请观察缩进并验证，剪贴板已恢复')
             # KEYEVENTF_UNICODE; preserves the user's clipboard.
             class KI(ctypes.Structure):
@@ -342,7 +391,8 @@ $r=$c.BoundingRectangle
                 scan=int.from_bytes(encoded[offset:offset+2],'little')
                 inputs=(INPUT*2)(INPUT(1,U(ki=KI(0,scan,4,0,0))),INPUT(1,U(ki=KI(0,scan,6,0,0))))
                 if user.SendInput(2,inputs,ctypes.sizeof(INPUT))!=2:raise RuntimeError('Windows 拒绝输入；检查实际进程权限')
-        else:raise ValueError('未知屏幕操作')
+        else:raise ValueError('未知屏幕操作：'+str(requested_action or action)[:40]+
+            '；支持 windows/editor_context/focus/observe/accessibility/uia/uia_read/uia_wait/click/double_click/move/drag/scroll/hotkey/press/type/fill')
         return dict(input_sent=True,action=requested_action,needs_observe=True,
             next_action='observe',message='输入已发送；只需重新 observe 验证效果，不要重复刚才的点击或输入')
 

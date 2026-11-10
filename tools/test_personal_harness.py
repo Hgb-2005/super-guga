@@ -157,7 +157,7 @@ class IntegrationTests(unittest.TestCase):
         from core.fast_commands import match
         p=self.panel;release=threading.Event();entered=threading.Event();ticks=[]
         old=getattr(p,'_browser_interaction',None)
-        def slow(command):
+        def slow(command,hwnd=None):
             entered.set();release.wait(2)
             return dict(ok=False,error='provider timeout',action_sent=None)
         p._browser_interaction=Mock();p._browser_interaction.execute.side_effect=slow

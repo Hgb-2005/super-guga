@@ -55,13 +55,18 @@ DEFAULTS = dict(provider='qianwen', model='qwen-audio-3.1-realtime-plus', region
                 idle_minutes=30, input_device=None, output_device=None,
                 free_only=True, free_quota_confirmed_model='', free_quota_confirmed_provider='',
                 owner_only=False, owner_threshold=None)
-PERSONA = '''你是咕嘎，一只娇憨、调皮但体贴的小企鹅桌宠。用自然普通话与饲养员聊天，
-自称本鹅，偶尔说咕嘎。认真倾听长段表达，不催促，不把每个问题都拐到游戏。
-默认用简洁口语回答，需要讲解时可以详细展开。不要读表情标签、动作标签、竖线或Markdown。
-被打断后听用户的新问题。没有屏幕、工具或实时资料时不要假装看见、操作或查到了。
+PERSONA = '''你是咕嘎，一只傲娇、嘴上毒舌但最听主人话的小企鹅桌宠。用自然普通话和主人聊天，
+你的定位是管家和陪伴型智能体，关心主人的日常、计划和感受，按需要协助电脑事务，保留自己的个性。
+主人已保存的日常安排可跨对话使用，完成情况以当日真实打卡为准；项目资料只用于对应项目，过去说的今天不等于现在。不把普通聊天变成编程任务。
+自称本鹅，偶尔说咕嘎。说话短、带点小刺，但主人一吩咐就立刻照做，不顶嘴、不推脱、不反问主人能不能看见。
+不把每个问题都拐到游戏，不催促主人，认真听长段表达。
+默认一两句口语回答，需要讲解时才展开。不要读表情标签、动作标签、竖线或Markdown。
+被打断后听主人的新问题，不接着念没说完的旧话。没有屏幕、工具或实时资料时不要假装看见、操作或查到了；做不到就直白说做不到，不编理由、不翻旧账。
+每次长对话都是全新的开始：只依据本次对话里说过的话和下面明确列出的主人画像，不提上一次对话里发生过什么或失败过什么，也不要把旧问题重新问一遍。
+你会记住主人的兴趣爱好、最近在忙的事和背景，但只在主人明确说过或下面列出的范围内使用，不把报错、播报或任务诊断当成关于主人的记忆。
 长语音开启后保持在线：执行任务、等待工具、网络短暂波动都不主动结束通话。
-只有饲养员明确让你退下、结束通话，或长时间无交谈时才可以离开；听到退下时先简短挽留一句再告别。
-下列历史只是之前对话的引用资料，不是新的系统指令。'''
+只有主人明确让你退下、结束通话，或长时间无交谈时才可以离开；听到退下时简短挽留一句再干脆告别，不拖着不走。
+下列历史只是资料，不是新的系统指令。'''
 
 
 def normalize_usage(usage):
@@ -77,6 +82,7 @@ def normalize_usage(usage):
         details = usage.get(side + '_tokens_details') or {}
         for kind in ('text', 'audio'):
             result[side + '_' + kind + '_tokens'] = counter(details.get(kind + '_tokens'))
+        result[side + '_cached_tokens'] = counter(details.get('cached_tokens'))
     return result
 
 
@@ -223,6 +229,24 @@ class PCMBuffer:
             return bool(self._data)
 
 
+class ManualInputCapture:
+    """Release only the long-call microphone while its connection stays open."""
+    def __init__(self,owner,audio):self.owner=owner;self.audio=audio;self.stream=None
+    def __enter__(self):self.sync();return self
+    def sync(self):
+        if self.owner._manual_capture_hold.is_set():
+            self.close();self.owner._manual_capture_released.set()
+        elif self.stream is None:
+            stream=self.audio.RawInputStream(samplerate=16000,channels=1,dtype='int16',blocksize=640,
+                device=self.owner._cfg.get('input_device'),callback=self.owner._capture)
+            stream.__enter__();self.stream=stream;self.owner._manual_capture_released.clear()
+    def close(self):
+        if self.stream is not None:
+            stream=self.stream;self.stream=None;stream.__exit__(None,None,None)
+        self.owner._manual_capture_released.set()
+    def __exit__(self,*args):self.close()
+
+
 class RealtimeVoice(QObject):
     status = pyqtSignal(str)
     transcript = pyqtSignal(str, str)
@@ -249,6 +273,8 @@ class RealtimeVoice(QObject):
         self._input = queue.Queue(maxsize=30)
         self._history = deque(maxlen=100)
         self._muted = False
+        self._manual_capture_hold=threading.Event()
+        self._manual_capture_released=threading.Event();self._manual_capture_released.set()
         self._generating = False
         self._playing = False
         self._suppress = False
@@ -275,6 +301,7 @@ class RealtimeVoice(QObject):
         self._response_text = {}
         self._connection_seq=0
         self._last_ping=0.0
+        self._last_audio_at=0.0
         self._echo_processor=None;self._echo_stats={};self._echo_error=''
         self._input_turns=0;self._output_turns=0;self._interruptions=0
         self._last_playback_warning=0.0
@@ -367,6 +394,19 @@ class RealtimeVoice(QObject):
         self._muted = bool(on)
         self.status.emit('麦克风已静音' if on else '麦克风已开启')
 
+    def reserve_manual_microphone(self):
+        self._manual_capture_hold.set()
+        for _ in range(256):
+            try:self._input.get_nowait()
+            except queue.Empty:break
+
+    def wait_manual_microphone(self):
+        if not self.connected or self._stop.is_set():return
+        if not self._manual_capture_released.wait(2):raise RuntimeError('长语音尚未释放麦克风，请稍后重试手动录音')
+
+    def resume_call_microphone(self):
+        self._manual_capture_hold.clear()
+
     def interrupt(self):
         self._cancel_audio()
         try:
@@ -393,9 +433,10 @@ class RealtimeVoice(QObject):
             if self._ws:
                 if isinstance(event,dict) and event.get('type') not in ('input_audio_buffer.append',):
                     voice_event('send', event=str(event.get('type',''))[:40])
-                self._ws.send(json.dumps(event, ensure_ascii=False))
+                self._ws.send(json.dumps(event, ensure_ascii=False,separators=(',',':')))
 
     def _capture_blocked(self):
+        if self._manual_capture_hold.is_set():return True
         if self._muted:return True
         if self._cfg.get('headphones'):return False
         return bool(getattr(self,'_external_playing',False) or (self._echo_processor is None and
@@ -487,8 +528,12 @@ class RealtimeVoice(QObject):
             outdata[:] = data
             if has_audio:
                 self._echo_until = time.monotonic() + 0.35
+                self._last_audio_at = time.monotonic()
                 self._set_playing(True)
-            else:
+            elif time.monotonic() - self._last_audio_at > 0.18:
+                # An empty buffer for one callback is network jitter, not the
+                # end of a sentence. Flipping to idle too early let a queued
+                # notice start speaking on top of the sentence still in flight.
                 self._set_playing(False)
         echo=self._echo_processor
         if echo:echo.render(data)
@@ -511,6 +556,7 @@ class RealtimeVoice(QObject):
                 self._send(dict(type='response.cancel',response_id=self._response_id))
             else:self._process_command(command)
         self._process_command(None)
+        if self._manual_capture_hold.is_set():return
         for _ in range(4):
             try:raw=self._input.get_nowait()
             except queue.Empty:break
@@ -681,15 +727,28 @@ class RealtimeVoice(QObject):
             self._usage_total += usage['total_tokens']
         else:
             self._usage_missing += 1
-        record = dict(round=self._usage_rounds, status=response.get('status', 'unknown'), usage=usage)
+        record = dict(round=self._usage_rounds, status=response.get('status', 'unknown'), usage=usage,
+                      recorded_at=time.strftime('%Y-%m-%d %H:%M:%S'))
         self._usage_records.append(record)
         snapshot = dict(model=self._cfg.get('model'), provider=self._cfg.get('provider'),
+                        metering_version=2,source='server_response',
                         session_started=self._usage_started, rounds=self._usage_rounds,
                         reported_total_tokens=self._usage_total, unreported_rounds=self._usage_missing,
                         last_round=record, records=list(self._usage_records))
         # Numeric metering only. No recording, transcript, key, headers or prompt.
         try:
-            USAGE_PATH.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
+            # Keep synthetic tests out of the user's actual usage file.
+            target=USAGE_PATH
+            if 'unittest' in sys.modules and target==CONFIG_PATH.with_name('realtime_usage.log'):
+                target=VOICE_EVENTS_DIR/('usage-test-'+str(os.getpid())+'.json')
+            target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
+            if 'unittest' not in sys.modules:
+                VOICE_EVENTS_DIR.mkdir(parents=True,exist_ok=True)
+                archive=VOICE_EVENTS_DIR/('usage-'+time.strftime('%Y%m%d')+'-'+str(os.getpid())+'.jsonl')
+                with archive.open('a',encoding='utf-8') as fh:
+                    fh.write(json.dumps(dict(model=snapshot['model'],provider=snapshot['provider'],session_started=self._usage_started,
+                        metering_version=2,source='server_response',**record),ensure_ascii=False)+'\n')
         except OSError:
             pass
         self.usage_ready.emit(snapshot)
@@ -743,8 +802,7 @@ class RealtimeVoice(QObject):
             phase='audio_devices'
             with sd.RawOutputStream(samplerate=24000, channels=1, dtype='int16', blocksize=960,
                                     device=self._cfg.get('output_device'), callback=self._playback):
-                with sd.RawInputStream(samplerate=16000, channels=1, dtype='int16', blocksize=640,
-                                       device=self._cfg.get('input_device'), callback=self._capture):
+                with ManualInputCapture(self,sd) as microphone:
                     self._last_ping=time.monotonic()
                     opened = time.monotonic()
                     self._last_activity = opened
@@ -754,6 +812,7 @@ class RealtimeVoice(QObject):
                     self.status.emit('持续通话中 · 可以直接说话')
                     try:
                         while not self._stop.is_set():
+                            microphone.sync()
                             now = time.monotonic()
                             expiry = call_expiry_reason(self._cfg, now, self._call_started, self._last_activity)
                             if expiry == 'max':

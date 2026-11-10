@@ -11,6 +11,21 @@ class MonitorInfo(ctypes.Structure):
               ('flags',wintypes.DWORD),('device',wintypes.WCHAR*32)]
 
 
+def logical_point(event):
+    """Mouse hooks use physical pixels; Qt tool windows use logical pixels."""
+    user=ctypes.windll.user32;x,y=int(event.get('x',0)),int(event.get('y',0))
+    user.MonitorFromPoint.argtypes=[wintypes.POINT,wintypes.DWORD];user.MonitorFromPoint.restype=wintypes.HANDLE
+    info=MonitorInfo();info.size=ctypes.sizeof(info)
+    user.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(MonitorInfo)]
+    if user.GetMonitorInfoW(user.MonitorFromPoint(wintypes.POINT(x,y),2),ctypes.byref(info)):
+        screen=next((s for s in QApplication.screens() if s.name().upper()==info.device.upper()),None)
+        if screen:
+            area=screen.geometry();native=info.monitor
+            return QPoint(round(area.left()+(x-native.left)*area.width()/max(1,native.right-native.left)),
+                          round(area.top()+(y-native.top)*area.height()/max(1,native.bottom-native.top)))
+    return QPoint(x,y)
+
+
 def snapshot(event):
     user=ctypes.windll.user32
     x,y=int(event.get('x',0)),int(event.get('y',0))

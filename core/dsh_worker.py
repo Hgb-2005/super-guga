@@ -223,7 +223,9 @@ class DshManager(QObject):
             env=dict(os.environ)
             try:
                 cfg=json.loads((ROOT/'ai_config.json').read_text(encoding='utf-8-sig'))
-                if cfg.get('api_key'):env['OPENCODE_GO_API_KEY']=str(cfg['api_key'])
+                from urllib.parse import urlsplit
+                if cfg.get('api_key') and urlsplit(str(cfg.get('base_url',''))).hostname=='opencode.ai':
+                    env['OPENCODE_GO_API_KEY']=str(cfg['api_key'])
             except (OSError,ValueError,TypeError):
                 pass
             # LingShu's truth source is user-scoped. In a frozen build DSH_HOME

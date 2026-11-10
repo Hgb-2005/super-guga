@@ -164,6 +164,11 @@ class SpriteAnimator:
         self._clip = None
         self._clip_frame = 0.0
         self._clip_started_at = None
+        self._idle_rest = None
+        self._last_native_pm = None
+        self._resident_pad = (0,0)
+        self._resident_return_at = None
+        self._last_idle_motion = None
         self._track_dy = 0.0
         self._track_squash = 1.0
         self._track_rot = 0.0
@@ -218,11 +223,13 @@ class SpriteAnimator:
     def set_dragging(self, active, speed=0.0):
         # Movement is handled by the window; no shaking/tilt animation on drag.
         self._being_dragged=bool(active)
+        if active:self._idle_rest=None
         if active and (self._clip or '').startswith('task:'):self.stop_clip()
         self._presence.set_dragging(False, 0.)
         if active and (self._clip or '').startswith('idle:'):self.stop_clip()
 
     def set_work_state(self,state,task_id='main'):
+        if state in ('thinking','working','waiting'):self._idle_rest=None
         if state in ('thinking','working','waiting','result','success','error') and (self._clip or '').startswith('idle:'):
             self.stop_clip()
         applied=self._task_motion.update(state,task_id)
@@ -233,12 +240,14 @@ class SpriteAnimator:
 
     def set_speaking(self,active):
         self._speaking=bool(active)
+        if active:self._idle_rest=None
         if active:self._hand_releasing=True
         if active and (self._clip or '').split(':',1)[0] in ('task','idle'):self.stop_clip()
 
     def set_music_stage(self,active):
         """Singing latches the accessory until the real audio state ends."""
         self._music_stage_active=bool(active)
+        if active:self._idle_rest=None
         if active:
             if (self._clip or '').startswith('idle:'):self.stop_clip()
             self.sunglasses=True
@@ -249,9 +258,15 @@ class SpriteAnimator:
     def play_idle_motion(self,name):
         clip='idle:'+str(name)
         if name not in {n for n,_ in self.idle_motion_clips} or clip not in self.clips:return False
+        if self._idle_motion_blocked():return False
         self._dancing=False;self.action='none'
         self.play_clip(clip,loop=False)
         return self._clip==clip
+
+    def _idle_motion_blocked(self):
+        return (self._speaking or self._being_dragged or self._music_stage_active or self.dancing or
+            self.mouth_open>.05 or self._task_motion.active or self.expression=='sleepy' or
+            self._context_expression not in (None,'happy') or self._temporary_expression is not None)
 
     def _load_task_clips(self):
         """A source manifest may only point to reviewed native-rate PNG bundles."""
@@ -274,17 +289,31 @@ class SpriteAnimator:
                     if name in self.clips:loaded[key]=name
         except (OSError,ValueError,TypeError,KeyError):return
 
-    def _load_idle_clips(self):
+    def _load_idle_clips(self,base=None):
         import json
         from pathlib import Path
-        base=Path(self._res_dir)/'actions/idle-motion'
+        if base is None:
+            base=Path(self._res_dir)/'actions/idle-motion'
+            candidate=Path(self._res_dir)/'actions/resident-motion-v2'
+            if (candidate/'manifest.json').is_file():base=candidate
+        base=Path(base)
         try:
             manifest=json.loads((base/'manifest.json').read_text(encoding='utf-8'))
             for spec in manifest.get('clips',[]):
                 name=str(spec.get('name','')).strip();folder=(base/spec['frames']).resolve();fps=float(spec['native_fps'])
                 if not name or not folder.is_relative_to(base.resolve()) or not 20<=fps<=60:continue
-                clip='idle:'+name;self._load_action_frames(clip,str(folder),fps,lazy=True)
+                clip='idle:'+name;self._load_action_frames(clip,str(folder),fps,lazy=True,
+                    reference_width=spec.get('reference_width'))
                 if clip in self.clips:self.idle_motion_clips.append((name,max(.01,float(spec.get('weight',1)))))
+            if manifest.get('padded_canvas') and len(self.idle_motion_clips)!=4:
+                for name,_ in self.idle_motion_clips:self.clips.pop('idle:'+name,None)
+                self.idle_motion_clips=[]
+                self._load_idle_clips(Path(self._res_dir)/'actions/idle-motion')
+                return
+            if manifest.get('padded_canvas') and len(self.idle_motion_clips)==4:
+                self._resident_pad=(round(self._dw*40/245),round(self._dw*60/245))
+                self.width=self._dw+2*self._resident_pad[0]
+                self.height=self._dh+self._resident_pad[1]+round(self._dw*12/245)
         except (OSError,ValueError,TypeError,KeyError):return
 
     def _tick_task_motion(self):
@@ -298,12 +327,14 @@ class SpriteAnimator:
             else:self.trigger_action({'thinking':'tilt','waiting':'peek'}.get(event['state'],event['gesture']))
 
     def task_animation_status(self):
-        return dict(version='2026-11-02.idle-video.1',active_clip=self._clip,
+        return dict(version='2026-11-08.resident-motion.1',active_clip=self._clip,
                     frame=int(self._clip_frame),director=self._task_motion.snapshot(),
                     loaded={name[5:]:dict(frames=len(clip['frames']),fps=clip['fps'],
                                         one_shot=bool(clip.get('one_shot_only')))
                             for name,clip in self.clips.items() if name.startswith('task:')},
                     idle_motion=dict(active=self._clip if (self._clip or '').startswith('idle:') else None,
+                        settled_pose=self._idle_rest is not None,canvas=[self.width,self.height],
+                        body_canvas=[self._dw,self._dh],padding=list(self._resident_pad),
                         loaded={name:dict(frames=len(self.clips['idle:'+name]['frames']),fps=self.clips['idle:'+name]['fps'],
                                          one_shot=bool(self.clips['idle:'+name].get('one_shot_only')))
                                 for name,_ in self.idle_motion_clips if 'idle:'+name in self.clips}))
@@ -322,6 +353,7 @@ class SpriteAnimator:
         """
         if expr not in self.EXPRESSIONS:
             return
+        self._idle_rest=None
         if expr not in ('normal','happy') and (self._clip or '').startswith('idle:'):self.stop_clip()
         # Sleep is latched: autonomous replies, gestures and stale callbacks
         # cannot wake the pet. Only an actual user input releases this state.
@@ -345,6 +377,7 @@ class SpriteAnimator:
     def _display_expression(self, expr):
         if expr not in self.EXPRESSIONS or expr == self.expression:
             return
+        self._idle_rest=None
         self._prev_expression = self.expression
         self.expression = expr
         self._transition = 0.0
@@ -405,13 +438,26 @@ class SpriteAnimator:
         if name.startswith('idle:') and not self._idle_motion_enabled:return
         if name not in self.clips:
             return
+        if name.startswith('idle:'):
+            if self._idle_motion_blocked():return
+            self._last_idle_motion=name[5:]
+            self._idle_rest=None
+            self._last_native_pm=None
+        self._track_dy=0.;self._track_squash=1.;self._track_rot=0.
         if loop is not None:
             self.clips[name]['loop'] = bool(loop) and not self.clips[name].get('one_shot_only',False)
         self._clip = name
         self._clip_frame = 0.0
         self._clip_started_at = time.monotonic()
 
-    def stop_clip(self):
+    def stop_clip(self, natural=False):
+        if (self._clip or '').startswith('idle:'):
+            if natural:
+                frames=self.clips[self._clip]['frames']
+                self._idle_rest=self._last_native_pm or frames[-1]
+                self._resident_return_at=time.monotonic()
+            else:self._idle_rest=None
+            self._last_native_pm=None
         self._clip = None
         self._clip_frame = 0.0
         self._clip_started_at = None
@@ -453,7 +499,7 @@ class SpriteAnimator:
             except Exception:
                 continue
 
-    def _load_action_frames(self, name, frames_dir, fps=15.0, lazy=False):
+    def _load_action_frames(self, name, frames_dir, fps=15.0, lazy=False, reference_width=None):
         """Load a transparent PNG animation without GIF palette loss."""
         if not os.path.isdir(frames_dir):
             return
@@ -468,7 +514,7 @@ class SpriteAnimator:
                if filename.lower().endswith('.png')]
         def load_path(path):
             with PILImage.open(path) as source:
-                return self._pil_to_pixmap(source.convert('RGBA'))
+                return self._pil_to_pixmap(source.convert('RGBA'),reference_width=reference_width)
         if lazy:
             frames=LazyFrameSequence(paths,load_path)
         else:
@@ -484,11 +530,15 @@ class SpriteAnimator:
             self.clips[name] = {'type': 'frames', 'frames': frames,
                                 'fps': float(fps), 'loop': not once,'one_shot_only':once}
 
-    def _pil_to_pixmap(self, pil_img):
+    def _pil_to_pixmap(self, pil_img, reference_width=None):
         from PyQt5.QtGui import QImage
         data = pil_img.tobytes('raw', 'RGBA')
         qimg = QImage(data, pil_img.width, pil_img.height, QImage.Format_RGBA8888)
         pm = QPixmap.fromImage(qimg)
+        if reference_width:
+            scale=self._dw/float(reference_width)
+            return pm.scaled(round(pm.width()*scale),round(pm.height()*scale),
+                Qt.KeepAspectRatio,Qt.SmoothTransformation)
         scale = min(self._dw / max(1, pm.width()), self._dh / max(1, pm.height()))
         return pm.scaled(int(pm.width() * scale), int(pm.height() * scale),
                          Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -646,8 +696,7 @@ class SpriteAnimator:
                 if c['loop']:
                     self._clip_frame %= n
                 else:
-                    self._clip = None
-                    self._clip_frame = 0.0
+                    self.stop_clip(natural=True)
             if c.get('type') == 'track':
                 idx = min(int(self._clip_frame), n - 1)
                 dy, sq, rt = c['frames'][idx]
@@ -681,13 +730,15 @@ class SpriteAnimator:
         # 随机小动作：空闲时偶尔蹦一下/偷看（保持动态）
         if (not self._task_motion.active and self.expression != 'sleepy' and
                 self._context_expression in (None,'happy') and self._temporary_expression is None and
-                self.action == "none" and self.mouth_open <= 0.05 and self._clip in (None, 'idle')):
+                self.action == "none" and not self._idle_motion_blocked() and self._clip in (None, 'idle')):
             self._idle_action_countdown -= dt
             if self._idle_action_countdown <= 0:
                 self._idle_action_countdown = random.uniform(12.0, 24.0)
                 r = random.random()
                 if r < .55 and self.idle_motion_clips:
-                    names=[name for name,_ in self.idle_motion_clips];weights=[weight for _,weight in self.idle_motion_clips]
+                    choices=[(name,weight) for name,weight in self.idle_motion_clips if name!=self._last_idle_motion]
+                    if not choices:choices=self.idle_motion_clips
+                    names=[name for name,_ in choices];weights=[weight for _,weight in choices]
                     self.play_clip('idle:'+random.choices(names,weights=weights,k=1)[0],loop=False)
                 elif r < 0.72:
                     self.trigger_action('bounce')
@@ -839,11 +890,33 @@ class SpriteAnimator:
     # ==================== 绘制 ====================
 
     def draw(self, p: QPainter, x: int, y: int):
+        x+=self._resident_pad[0];y+=self._resident_pad[1]
         p.save()
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         p.setRenderHint(QPainter.Antialiasing, True)
 
         self._draw_shadow(p, x, y)
+
+        # Source video owns its body motion. A completed action keeps its settled
+        # final pose instead of jumping back to a different-sized illustration.
+        native_idle=(self._clip or '').startswith('idle:')
+        settled=(self._idle_rest is not None and self.expression in ('normal','happy') and
+            self.action=='none' and not self._speaking and not self._task_motion.active)
+        if native_idle or settled:
+            if native_idle:
+                frames=self.clips[self._clip]['frames']
+                pm=frames[min(int(self._clip_frame),len(frames)-1)]
+                self._last_native_pm=pm
+            else:pm=self._idle_rest
+            if settled and not native_idle:
+                age=max(0,time.monotonic()-(self._resident_return_at or time.monotonic()))
+                breath=1.+.002*math.sin(age*math.pi/2)*min(1.,age/.25)
+                anchor_x=x+self._dw/2;anchor_y=y+self._dh
+                p.translate(anchor_x,anchor_y);p.scale(breath,breath);p.translate(-anchor_x,-anchor_y)
+            margin=self._dw*8/245 if self._resident_pad!=(0,0) else 0
+            p.drawPixmap(int(x+(self._dw-pm.width())/2),int(y+self._dh-pm.height()+margin),pm)
+            if self.sunglasses:self._draw_sunglasses(p,x,y)
+            p.restore();return
 
         # Finished source choreography owns its motion. Never add the procedural
         # head/body deformation that made the previous assembled dance strange.
@@ -855,7 +928,8 @@ class SpriteAnimator:
             p.restore();return
 
         cx = x + self._dw / 2
-        cy = y + self._dh / 2
+        planted=self.action=='none' and self._clip in (None,'idle','talk')
+        cy = y + self._dh if planted else y + self._dh / 2
         sx = 2 - self.body_squash
         sy = self.body_squash
         if self._tap_elapsed < .22:
@@ -868,8 +942,8 @@ class SpriteAnimator:
         # 说话时轻微点头（增加真实感）
         talk_bob = self.mouth_open * 1.6
 
-        p.translate(cx + self.anim_offset.x(), cy + self.breath_y + self.anim_offset.y()
-                    + talk_bob + self._track_dy)
+        p.translate(cx + self.anim_offset.x(), cy + (0 if planted else self.breath_y) + self.anim_offset.y()
+                    + talk_bob + (0 if planted else self._track_dy))
         p.rotate(self.body_sway_x * 0.25 + self.anim_rotate + self._track_rot)
         sq = self._track_squash
         p.scale(breath_scale * sx * self.anim_scale_x * (2 - sq),

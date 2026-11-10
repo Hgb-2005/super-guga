@@ -33,17 +33,24 @@ def normalize(text):
 
 def command_text(text):
     value=normalize(text)
+    # ASR keeps conversational fillers. Remove only a standalone leading filler,
+    # never a negation or a clause describing what somebody else said.
+    value=re.sub(r'^(?:(?:嗯+|呃+|额+|哦+|啊+|好的|好吧|好|行)[，,\s]+)+','',value)
+    # An explicit correction cancels the first launch and selects the second.
+    correction=re.fullmatch(r'(?:先)?(?:不|别|不用|不要)(?:打开|启动)[^，,；;]{1,30}[，,；;]\s*((?:打开|启动).+)',value)
+    if correction:value=correction.group(1)
     value=re.sub(r'^(?:(?:不[，,\s]*){1,4}[，,\s]*|不是[，,\s]*)?(?:我的意思是|我是说|我说的是)(?:让你|要你)?[，,\s]*','',value)
     value=re.sub(r'(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])','',value)
     value=re.sub(r'^(?:小?咕嘎)[，,\s]*','',value)
     value=re.sub(r'^(?:(?:你能不能|你能|你可以|你帮我|你给我|请你?|麻烦你?|能不能|可以请你|可以|帮我|给我|替我)[，,\s]*)+','',value)
+    value=re.sub(r'^(?:(?:你)?现在)?(?:重新|再)?(?=打开|启动)','',value)
     value=re.sub(r'^((?:打开|启动|访问|前往)(?:一下)?)[，,:：\s]+',r'\1',value)
     return value
 
 
 def command_key(command):
-    if command.get('action')=='browser_step':
-        return ('browser_step',command.get('browser_action'),str(command.get('target','')),str(command.get('text','')))
+    if command.get('action') in ('browser_step','desktop_step'):
+        return ('desktop_step',command.get('step_action') or command.get('browser_action'),str(command.get('target','')),str(command.get('text','')),command.get('index'))
     target=str(command.get('target','')).casefold()
     if target in BROWSER_NAMES:target='浏览器'
     return (command.get('action'),command.get('kind'),target)
@@ -52,12 +59,12 @@ def command_key(command):
 def _open_app(target):
     target=target.strip().strip('“”"\' ')
     if target in BROWSER_NAMES:
-        from core.browser_launch import default_executable
+        from core.browser_launch import default_executable,launch_arguments
         browser=default_executable() or _browser_executable()
         if browser:
             # A real browser window, independent of third-party HTTP handlers
             # that may accept a URL without showing it to the user.
-            subprocess.Popen([str(browser),'about:blank'])
+            subprocess.Popen(launch_arguments(browser,'about:blank'))
             return dict(kind='app',target='浏览器',launch_requested=True,verified_running=False,
                 message='已请求浏览器打开新窗口')
         return _open_url('https://www.baidu.com')
@@ -91,10 +98,30 @@ def _open_url(url):
 def match(text):
     """Parse a high-confidence local action without performing it."""
     value=command_text(text)
+    if re.fullmatch(r'(?:查看)?\s*DSH\s*(?:进度|任务状态|现在在干什么|正在做什么)[。？！?!]*',str(text).strip(),re.I):
+        return dict(matched=True,action='dsh_link',arguments=dict(action='status'),source_text=str(text),silent=False)
+    follow=re.fullmatch(r'关注\s*DSH\s*会话\s+([a-zA-Z0-9_-]+)',str(text).strip(),re.I)
+    if follow:return dict(matched=True,action='dsh_link',arguments=dict(action='focus',session_id=follow[1]),source_text=str(text),silent=False)
+    from core.daily_plan import parse_command
+    daily = parse_command(text)
+    if daily:
+        return dict(matched=True,action='daily_plan',arguments=daily,source_text=str(text),silent=False)
     prefix=dict(source_text=normalize(text))
+    from core.desktop_interaction import _input_method_question
+    if _input_method_question(value):
+        # This asks about the input method; it is not text to enter in a field.
+        return dict(matched=False,action='none',silent=False)
     from core.browser_interaction import parse_step
     browser_step=parse_step(value,str(text or ''))
-    if browser_step:return browser_step
+    from core.desktop_interaction import parse_desktop_step
+    desktop_step=parse_desktop_step(value,str(text or ''))
+    # Numbered targets and added keyboard phrases take precedence over the
+    # legacy parser's generic "click <name>" result.
+    if desktop_step and desktop_step.get('step_action') in ('list_targets','click_index','unsupported'):
+        return desktop_step
+    if browser_step:
+        return dict(desktop_step,action='browser_step',kind='browser') if desktop_step else browser_step
+    if desktop_step:return desktop_step
     # A search/open prefix must not swallow the rest of a multi-step job.
     if re.search(r'(?:[，,。；;]|然后|接着|并且|并)(?:再|请|帮我|将|把)?[^，,。；;]{0,20}(?:写入|写成|保存|发送|创建|整理成|下载|安装)',value):
         return dict(matched=False,action='none',silent=False)
@@ -145,9 +172,30 @@ def match(text):
     close_page=re.fullmatch(r'(?:(?:关闭|关掉|关上)(?:一下)?(?:这个|当前|现在|正在看|活动|前台)?(?:的)?(?:浏览器)?(?:页面|网页|标签页|标签)|(?:把)?(?:这个|当前|现在|活动|前台)?(?:的)?(?:浏览器)?(?:页面|网页|标签页|标签)(?:给)?(?:关掉|关闭|关上))(?:吧|一下|好吗|可以吗)?',value)
     if close_page:
         return dict(prefix,matched=True,action='close_page',kind='close_page',target='current_tab',silent=True,priority='fast')
-    close=re.fullmatch(r'(?:把)?(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:关掉|关闭|退出)(?:吧|一下)?|(?:关闭|关掉|退出)(?:一下)?\s*(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:吧|一下)?',value,re.I)
+    close=re.fullmatch(r'(?:把)?(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:窗口)?(?:关掉|关闭|退出)(?:吧|一下)?|(?:关闭|关掉|退出)(?:一下)?\s*(默认浏览器|网页浏览器|浏览器|豆包浏览器|edge|chrome|firefox)(?:窗口)?(?:吧|一下)?',value,re.I)
     if close:
         return dict(prefix,matched=True,action='close_browser',kind='close_browser',target=(close.group(1) or close.group(2)).lower(),silent=True,priority='fast')
+    window_kind=_window_control_intent(value)
+    if window_kind:
+        return dict(prefix,matched=True,action='window_control',kind=window_kind['kind'],
+                    target=('浏览器' if window_kind['browser'] else window_kind['kind']),silent=True,priority='fast')
+    # "打开微信，找到小军": do the local part immediately, keep the rest as a
+    # stated limitation instead of sending the whole sentence to a dead gateway.
+    compound=re.match(r'^(?:帮我|请)?(?:把|将)?(?:打开|启动)(?:一下)?\s*([^，,。；;？?]{1,20})[，,]\s*(.+)$',value)
+    if compound:
+        target=compound.group(1).strip().strip('“”"\' ')
+        if target in BROWSER_NAMES:target='浏览器'
+        if (target and len(target)<=20 and target not in SITE_ALIASES
+                and not re.search(r'然后|接着|搜索|网页|网站|http|是什么|为什么|怎么',target)):
+            return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',
+                        target=target,remaining=str(compound.group(2))[:200])
+    inverted=re.fullmatch(r'(?:把|将)?\s*(.+?)\s*(?:给)?(?:打开|启动|开一下)(?:一下|吧)?',value)
+    if inverted:
+        target=re.sub(r'^(?:这个|那个|我的)','',inverted.group(1).strip()).strip('“”"\' ')
+        if target in BROWSER_NAMES:target='浏览器'
+        if (target and len(target)<=20 and target not in SITE_ALIASES
+                and not re.search(r'[，,。;；：:]|[?？]|然后|接着|找到|搜索|点击|写入|保存|关闭',target)):
+            return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',target=target)
     match=re.fullmatch(r'(?:(?:在|用)(?:默认)?浏览器)?(?:打开|启动|访问|前往)(?:一下)?(?:一个)?(?:网页|网站|页面)?\s*(.+)',value)
     if match:
         target=match.group(1).strip().strip('“”"\' ')
@@ -186,6 +234,123 @@ def match(text):
             # the Start Menu on Qt/voice threads or require a duplicate grant.
             return dict(prefix,matched=True,action='open_app',silent=True,priority='fast',kind='app',target=target)
     return dict(matched=False,action='none',silent=False)
+
+
+WINDOW_CONTROLS=(
+    ('maximize',('最大化','窗口最大化','最大化窗口','这个窗口最大化','当前窗口最大化','放到最大','铺满屏幕',
+                 '放大窗口','浏览器最大化','最大化浏览器')),
+    ('minimize',('最小化','窗口最小化','最小化窗口','这个窗口最小化','当前窗口最小化','收到任务栏','缩到任务栏',
+                 '最小化到任务栏','浏览器最小化','最小化浏览器')),
+    ('restore',('还原窗口','窗口还原','恢复窗口','还原大小','恢复窗口大小','恢复正常大小','取消最大化',
+                '恢复原来大小','恢复原大小','浏览器还原')),
+    ('close',('关闭窗口','关掉窗口','关这个窗口','这个窗口关掉','关掉当前窗口','关闭当前窗口','关掉这个',
+              '关闭这个','关掉这个窗口')),
+)
+BROWSER_PROCESSES=('msedge.exe','chrome.exe','firefox.exe','doubao.exe','brave.exe')
+
+
+def _window_control_intent(value):
+    """Recognise window-level verbs that need no accessibility tree at all."""
+    text=re.sub(r'^(?:请|帮我|麻烦|把|将|给我|你)+','',value)
+    text=re.sub(r'(?:一下|吧|好吗|可以吗|谢谢)$','',text).strip()
+    text=text.replace('的','')
+    if len(text)>10:return None
+    for kind,phrases in WINDOW_CONTROLS:
+        if text in phrases:return dict(kind=kind,browser=('浏览器' in text))
+    return None
+
+
+_WINDOW_MEMORY=dict(hwnd=0,at=0.,title='',kind='')
+
+
+def _window_target(win32gui,win32process):
+    """Foreground window when it is a real app; otherwise the window we just touched."""
+    now=time.monotonic()
+    hwnd=int(win32gui.GetForegroundWindow() or 0)
+    if hwnd:
+        try:desktop_class=win32gui.GetClassName(hwnd)
+        except Exception:desktop_class=''
+        if (hwnd==int(win32gui.GetDesktopWindow()) or desktop_class in
+                ('Progman','WorkerW','Shell_TrayWnd','#32769','SysListView32')):
+            return 0,now,'desktop'
+    if hwnd and win32process.GetWindowThreadProcessId(hwnd)[1]==os.getpid():
+        last=_WINDOW_MEMORY
+        if last['hwnd'] and now-last['at']<10 and win32gui.IsWindow(last['hwnd']):
+            return int(last['hwnd']),now,'memory'
+        return 0,now,'own'
+    return hwnd,now,'foreground'
+
+
+def _window_state(hwnd,win32con):
+    import win32gui
+    show=int(win32gui.GetWindowPlacement(hwnd)[1])
+    return show==win32con.SW_SHOWMAXIMIZED,show==win32con.SW_SHOWMINIMIZED
+
+
+def _window_control(kind,browser_only=False):
+    """Window state is a system property, never a button to hunt for in UIA."""
+    import win32con
+    import win32gui
+    import win32process
+    from core.desktop_access import DesktopAccess
+    if not DesktopAccess().enabled:
+        return dict(ok=False,code='access_disabled',action_sent=False,error='完整访问未开启；尚未操作窗口')
+    hwnd,now,source=_window_target(win32gui,win32process)
+    if source=='desktop':
+        return dict(ok=False,code='system_window',action_sent=False,error='当前对着的是桌面或任务栏，没有可操作的窗口')
+    if source=='own':
+        return dict(ok=False,code='own_window',action_sent=False,error='当前前台是咕嘎自己，先切到要操作的窗口再说一次')
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        return dict(ok=False,code='target_missing',action_sent=False,error='没有取到可操作的窗口；尚未操作')
+    if kind=='restore':
+        last=_WINDOW_MEMORY
+        if now-last['at']<10 and last['hwnd'] and int(last['hwnd'])!=hwnd and win32gui.IsWindow(last['hwnd']):
+            # A window minimised a moment ago is what "还原" means, even after focus moved on.
+            if _window_state(int(last['hwnd']),win32con)[1]:hwnd=int(last['hwnd'])
+    pid=win32process.GetWindowThreadProcessId(hwnd)[1]
+    if browser_only:
+        try:
+            import psutil
+            process=psutil.Process(pid).name().lower()
+        except Exception:process=''
+        if process not in BROWSER_PROCESSES:
+            return dict(ok=False,code='not_browser',action_sent=False,error='当前前台不是浏览器，先切到浏览器窗口再说一次')
+    title=win32gui.GetWindowText(hwnd)[:40] or '当前窗口'
+    _WINDOW_MEMORY.update(hwnd=hwnd,at=now,title=title,kind=kind)
+    zoomed,iconic=_window_state(hwnd,win32con)
+    if kind=='maximize' and zoomed:
+        return dict(ok=True,verified=True,action_sent=False,code='already_maximized',evidence='is_zoomed',message='「'+title+'」已经是最大化了')
+    if kind=='minimize' and iconic:
+        return dict(ok=True,verified=True,action_sent=False,code='already_minimized',evidence='is_iconic',message='「'+title+'」已经最小化了')
+    if kind=='restore' and not zoomed and not iconic:
+        return dict(ok=True,verified=True,action_sent=False,code='already_normal',evidence='is_normal',message='「'+title+'」本来就是正常大小')
+    try:
+        if kind=='maximize':win32gui.ShowWindow(hwnd,win32con.SW_MAXIMIZE)
+        elif kind=='minimize':win32gui.ShowWindow(hwnd,win32con.SW_MINIMIZE)
+        elif kind=='restore':win32gui.ShowWindow(hwnd,win32con.SW_RESTORE)
+        elif kind=='close':win32gui.PostMessage(hwnd,win32con.WM_CLOSE,0,0)
+        else:raise ValueError('未知窗口操作')
+    except ValueError:raise
+    except Exception as exc:
+        return dict(ok=False,code='window_action_failed',action_sent=False,error='窗口操作没有发出去：'+type(exc).__name__)
+    deadline=time.monotonic()+1.5;verified=False
+    while time.monotonic()<deadline:
+        zoomed,iconic=_window_state(hwnd,win32con)
+        if kind=='maximize' and zoomed:verified=True;break
+        if kind=='minimize' and iconic:verified=True;break
+        if kind=='restore' and not zoomed and not iconic:verified=True;break
+        if kind=='close' and not win32gui.IsWindow(hwnd):verified=True;break
+        time.sleep(.03)
+    if kind=='close' and not verified:verified=not win32gui.IsWindow(hwnd)
+    evidence=dict(maximize='is_zoomed',minimize='is_iconic',restore='is_normal',close='window_gone')[kind]
+    if verified:
+        return dict(ok=True,verified=True,action_sent=True,code='window_'+kind,evidence=evidence,
+            message='「'+title+'」'+(dict(maximize='已最大化',minimize='已最小化',restore='已还原',close='已关闭')[kind]))
+    if kind=='close':
+        return dict(ok=False,verified=False,action_sent=True,code='close_unverified',evidence=evidence,
+            error='已发出关闭请求，但窗口还在；可能有未保存内容或确认提示，请自己看一眼，不会重复关')
+    return dict(ok=False,verified=False,action_sent=True,code='window_'+kind+'_unverified',evidence=evidence,
+        error='已发出'+dict(maximize='最大化',minimize='最小化',restore='还原')[kind]+'请求，但状态没变；可能被应用自己锁定了窗口大小')
 
 
 def _close_browser(target):
@@ -238,6 +403,8 @@ def _execute(result):
     if values.get('action') in ('screen_share_start','screen_share_stop'):
         return dict(ok=False,code='host_ui_required',error='共享屏幕需要由咕嘎界面控制')
     if values.get('action')=='close_browser':return _close_browser(values['target'])
+    if values.get('action')=='window_control':
+        return _window_control(values['kind'],browser_only=str(values.get('target',''))=='浏览器')
     if values.get('kind')=='url':
         return dict(ok=True,**_open_url(values['target']))
     if values.get('kind')=='app':

@@ -62,27 +62,23 @@ class PetSpeechBubble(QFrame):
         self.text = QLabel(); self.text.setWordWrap(True); self.text.setTextFormat(Qt.PlainText)
         self.text.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addWidget(self.text)
-        hint = QLabel('按住 ↑ 说话 · 右键展开完整对话'); hint.setObjectName('BubbleHint')
+        hint = QLabel('点击 ↑ 录音，再点发送 · 右键展开完整对话'); hint.setObjectName('BubbleHint')
         hint.setAttribute(Qt.WA_TransparentForMouseEvents)
         layout.addWidget(hint)
-        self.talk_dock=QFrame();self.talk_dock.setObjectName('TalkDock')
-        self.talk_dock.setProperty('recording',False)
-        talk=QHBoxLayout(self.talk_dock);talk.setContentsMargins(4,3,4,3);talk.setSpacing(7)
-        self.cancel_button=QPushButton('×');self.cancel_button.setObjectName('TalkCancel')
-        self.cancel_button.setFocusPolicy(Qt.NoFocus);self.cancel_button.setToolTip('取消录音；未录音时收起气泡')
-        self.cancel_button.clicked.connect(self.cancel_talk);talk.addWidget(self.cancel_button)
-        self.wave=QLabel('▁▂▃▄▃▂▁');self.wave.setObjectName('TalkWave')
-        self.wave.setAttribute(Qt.WA_TransparentForMouseEvents);talk.addWidget(self.wave,1)
-        self.talk_hint=QLabel('按住说话');self.talk_hint.setObjectName('TalkHint')
-        self.talk_hint.setAttribute(Qt.WA_TransparentForMouseEvents);talk.addWidget(self.talk_hint)
-        self.talk_button=QPushButton('↑');self.talk_button.setObjectName('TalkSend')
-        self.talk_button.setFocusPolicy(Qt.NoFocus);self.talk_button.setToolTip('按住说话，松开发送；识别后咕嘎会用语音回答')
-        self.talk_button.pressed.connect(self._begin_talk);self.talk_button.released.connect(self._finish_talk)
-        talk.addWidget(self.talk_button)
+        from ui.voice_record_bar import VoiceRecordBar
+        self.talk_dock=VoiceRecordBar(self)
+        self.cancel_button=self.talk_dock.cancel_button
+        self.wave=self.talk_dock.wave
+        self.talk_hint=self.talk_dock.hint
+        self.talk_button=self.talk_dock.send_button
+        self.wave_timer=self.talk_dock.timer
+        self.talk_dock.started.connect(self.talk_started)
+        self.talk_dock.submitted.connect(lambda:self.talk_stopped.emit(False))
+        self.talk_dock.cancelled.connect(self._cancel_recording)
+        self.talk_dock.state_changed.connect(self._dock_state_changed)
         layout.addWidget(self.talk_dock)
         outer.addWidget(card)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(self._expire)
-        self.wave_timer=QTimer(self);self.wave_timer.setInterval(130);self.wave_timer.timeout.connect(self._wave_tick)
         pet.installEventFilter(self)
 
     def set_call_active(self, active, conversation_id=None):
@@ -122,9 +118,12 @@ class PetSpeechBubble(QFrame):
         preview = self.full_text if len(self.full_text)<=1600 else self.full_text[:1598].rstrip()+'…'
         self.text.setText(preview)
         self.talk_dock.setVisible(True)
-        self.setToolTip('按住 ↑ 说话；完整对话请从右键菜单展开')
+        self.setToolTip('点击 ↑ 录音，再点发送；完整对话请从右键菜单展开')
         self.adjustSize()
         self.follow_pet()
+        launcher = getattr(self.pet, '_floating_launcher', None)
+        if getattr(self.pet, '_desktop_hidden', False) and launcher:
+            launcher.notify_text(self.full_text)
         if self.pet.isVisible():
             try:
                 import ctypes
@@ -142,55 +141,38 @@ class PetSpeechBubble(QFrame):
         elif self.isVisible():
             self.timer.start(12000)
 
-    def _set_dock_state(self, recording=False, hint='按住说话', title='咕嘎', wave=None):
-        self.talk_dock.setProperty('recording',bool(recording))
-        self.talk_dock.style().unpolish(self.talk_dock);self.talk_dock.style().polish(self.talk_dock)
-        for widget in (self.cancel_button,self.wave,self.talk_hint,self.talk_button):
-            widget.style().unpolish(widget);widget.style().polish(widget)
-        self.talk_hint.setText(hint);self.title.setText(title)
-        if wave is not None:self.wave.setText(wave)
+    def _dock_state_changed(self,state):
+        self._voice_state=state;self._recording=state=='recording'
+        if state!='idle':self.timer.stop()
+        elif self.isVisible():self.timer.start(15000)
         self.adjustSize();self.follow_pet()
 
     def set_voice_state(self,state):
-        self._voice_state=str(state or 'idle')
-        if self._voice_state=='preparing':
-            self._set_dock_state(True,'准备麦克风','咕嘎 · 正在听','● ● ●')
-        elif self._voice_state=='recording':
-            self._recording=True;self.wave_timer.start();self.timer.stop()
-            self._set_dock_state(True,'松开发送','咕嘎 · 正在听')
-        elif self._voice_state=='transcribing':
-            self._recording=False;self.wave_timer.stop();self.timer.stop()
-            self._set_dock_state(True,'正在识别','咕嘎 · 正在听','▃▃▃▃▃')
-        else:
-            self._recording=False;self.wave_timer.stop()
-            self._set_dock_state(False,'按住说话','咕嘎' if not self.speaking else '咕嘎 · 正在回答','▁▂▃▄▃▂▁')
-            if self.isVisible():self.timer.start(15000)
+        self.talk_dock.set_state(state)
 
-    def _wave_tick(self):
-        patterns=('▁▂▃▄▃▂▁','▂▄▆▃▅▂▄','▄▂▅▇▃▁▂','▃▅▂▄▆▃▅','▂▃▅▇▅▃▂')
-        self._wave_index=(self._wave_index+1)%len(patterns);self.wave.setText(patterns[self._wave_index])
+    def set_voice_level(self,value):
+        self.talk_dock.set_level(value)
+
+    def toggle_talk(self):
+        self.talk_dock.primary()
 
     def _begin_talk(self):
-        if self._voice_state in ('preparing','recording','transcribing'):return
-        self._recording=True;self.timer.stop();self._voice_state='recording';self.wave_timer.start()
-        self._set_dock_state(True,'松开发送','咕嘎 · 正在听','▂▃▅▇▅▃▂')
-        self.talk_started.emit()
+        self.talk_dock.begin()
 
     def _finish_talk(self):
-        if not self._recording or self._voice_state=='transcribing':return
-        self._recording=False;self._voice_state='transcribing';self.wave_timer.stop()
-        self._set_dock_state(True,'正在识别','咕嘎 · 正在听','▃▃▃▃▃')
-        self.talk_stopped.emit(False)
+        if self._voice_state in ('recording','ready'):self.talk_dock.primary()
+
+    def _cancel_recording(self):
+        panel=getattr(self.pet,'_agent_panel',None)
+        was_recording=bool(panel and panel.short_voice.active)
+        self.talk_stopped.emit(True)
+        if not was_recording:self.hide()
 
     def cancel_talk(self):
-        if self._recording or self._voice_state in ('preparing','transcribing'):
-            self._recording=False;self.wave_timer.stop();self._voice_state='idle'
-            self._set_dock_state(False,'按住说话','咕嘎')
-            self.talk_stopped.emit(True)
-        else:self.hide()
+        self.talk_dock.cancel()
 
     def _expire(self):
-        if self._recording or self._voice_state in ('preparing','transcribing'):return
+        if self._recording or self._voice_state in ('preparing','transcribing','ready'):return
         if self.call_active:
             self.text.setText('正在听你说话…')
             self.adjustSize(); self.follow_pet()

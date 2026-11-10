@@ -19,6 +19,7 @@ import json
 import base64
 import re
 import glob
+from urllib.parse import urlsplit
 from PyQt5.QtCore import QObject, pyqtSignal, QUrl
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 
@@ -29,6 +30,22 @@ _PUNCT_RE = re.compile(r'[，。！？、；：“”‘’（）【】《》〈
 _TMP_PREFIX = 'guga_tts_'
 _MAX_TEMP_FILES = 4
 _SYNTH_TIMEOUT = 20  # 单次合成最长 20 秒
+
+
+def configure_edge_transport():
+    """Keep Edge's voice/protocol; use Microsoft's reachable read-aloud host.
+
+    App-process only: do not edit site-packages or system proxy settings.
+    Endpoint documented in upstream edge-tts issue #490. The installed SDK
+    already supplies its v2 handshake; its legacy Bing host times out locally.
+    """
+    import importlib
+    transport = importlib.import_module('edge_tts.communicate')
+    if urlsplit(transport.WSS_URL).hostname == 'speech.platform.bing.com':
+        from edge_tts.constants import TRUSTED_CLIENT_TOKEN
+        transport.WSS_URL = ('wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1'
+                             '?Ocp-Apim-Subscription-Key=' + TRUSTED_CLIENT_TOKEN)
+    return urlsplit(transport.WSS_URL).hostname
 
 
 def strip_punct(text: str) -> str:
@@ -96,6 +113,7 @@ class TTSEngine(QObject):
             self.DOUBAO_API_KEY = ''
         self._use_doubao = bool(self.DOUBAO_API_KEY)
         self._use_edge = self._check_edge_tts()
+        self.reload_settings()
 
         if self._use_doubao:
             try:
@@ -115,6 +133,14 @@ class TTSEngine(QObject):
         print(f"[TTS] 豆包语音V3: {'可用' if self._use_doubao else '未配置'}")
 
     # ---- 依赖检查 ----
+    def reload_settings(self):
+        from core.model_settings import read_raw
+        cfg=read_raw()
+        self.provider=cfg.get('tts_provider') or 'edge'
+        self.EDGE_VOICE=cfg.get('edge_voice') or type(self).EDGE_VOICE
+        self.EDGE_RATE=cfg.get('edge_rate') or type(self).EDGE_RATE
+        self.EDGE_PITCH=cfg.get('edge_pitch') or type(self).EDGE_PITCH
+
     def _check_edge_tts(self):
         try:
             import edge_tts  # noqa
@@ -172,10 +198,10 @@ class TTSEngine(QObject):
             tmp.close()
 
             success = False
-            if self._use_edge:
+            if self._use_edge and (getattr(self,'provider','edge')=='edge' or voice_profile):
                 success = self._synth_edge(text,tmp_path,voice_profile) if voice_profile else self._synth_edge(text,tmp_path)
             # A failed companion voice must not silently become Guga's fallback.
-            if not success and self._use_doubao and not voice_profile:
+            if not success and self._use_doubao and not voice_profile and getattr(self,'provider','edge')=='doubao':
                 success = self._synth_doubao(text, tmp_path)
 
             if not success:
@@ -204,13 +230,14 @@ class TTSEngine(QObject):
         """edge-tts 合成, 加超时防止网络卡死"""
         try:
             import edge_tts
+            configure_edge_transport()
 
             async def _synth():
                 communicate = edge_tts.Communicate(
                     text, (voice_profile or {}).get('edge_voice',self.EDGE_VOICE),
                     rate=(voice_profile or {}).get('edge_rate',self._current_rate()),
                     pitch=(voice_profile or {}).get('edge_pitch',self.EDGE_PITCH),
-                    volume="+0%"
+                    volume="+0%", connect_timeout=5, receive_timeout=10
                 )
                 await communicate.save(out_path)
 

@@ -9,10 +9,18 @@ def prepare_sidecar():
     dsh=Path.home()/'.local/bin/node_modules/@deepseek-ai/dsh'
     shutil.copytree(dsh,VENDOR/'dsh',dirs_exist_ok=True)
     shutil.copy2(shutil.which('node'),VENDOR/'node.exe')
-    home=VENDOR/'dsh-home';profile=home/'profiles/headless';profile.mkdir(parents=True,exist_ok=True)
-    source=Path.home()/'.dsh/profiles/headless'
-    for name in ('cordis.yml','cordis.patch.yml','package.json','pnpm-workspace.yaml'):
-        shutil.copy2(source/name,profile/name)
+    home=VENDOR/'dsh-home'
+    for profile_name in ('headless','guga'):
+        source=Path.home()/'.dsh/profiles'/profile_name
+        if not source.is_dir():continue
+        profile=home/'profiles'/profile_name;profile.mkdir(parents=True,exist_ok=True)
+        for name in ('cordis.yml','cordis.patch.yml','package.json','pnpm-workspace.yaml'):
+            item=source/name
+            if item.is_file():shutil.copy2(item,profile/name)
+        # The guga profile carries out-of-tree bundles (LingShu memory + ego browser).
+        if (source/'node_modules').is_dir():
+            shutil.copytree(source/'node_modules',profile/'node_modules',dirs_exist_ok=True)
+    profile=home/'profiles/headless';profile.mkdir(parents=True,exist_ok=True)
     # Preserve the provider adapter overlay that was verified on this machine.
     # It contains provider routing only; the API key comes from the environment.
     shutil.copy2(Path.home()/'.dsh/cordis.patch.yml',home/'cordis.patch.yml')

@@ -12,11 +12,42 @@ def pipe_name():
     return 'guga-self-' + hashlib.sha256(source.encode('utf-8')).hexdigest()[:20]
 
 
+def extension_tools():
+    """个人超级智能体新增能力：屏幕感知 / 桌面命令 / 灵枢记忆。"""
+    return [
+        dict(name='screen_context',
+             description='实时屏幕感知（内存 only）：查看当前前台窗口与画面变化摘要，或启停 2fps 观察。summary 给出一句大白话。',
+             inputSchema=dict(type='object',properties=dict(
+                 action=dict(type='string',enum=['status','context','summary','start','stop'])),
+                 required=['action'],additionalProperties=False)),
+        dict(name='desktop_command',
+             description='桌面软件命令总线：list 列出可启动软件，open 拉起或复用软件窗口，focus 切到前台，aliases 查看内置别名。只接受软件名或已授权路径。',
+             inputSchema=dict(type='object',properties=dict(
+                 action=dict(type='string',enum=['list','open','focus','aliases']),
+                 target=dict(type='string'),query=dict(type='string')),
+                 required=['action'],additionalProperties=False)),
+        dict(name='lingshu_memory',
+             description='灵枢（md_cg）统一记忆桥：status 看缓存，recall 后台召回相关记忆，remember 把一条工作结果写成 CCG 合规记忆。非阻塞。',
+             inputSchema=dict(type='object',properties=dict(
+                 action=dict(type='string',enum=['status','recall','remember']),
+                 query=dict(type='string'),title=dict(type='string'),content=dict(type='string')),
+                 required=['action'],additionalProperties=False)),
+        dict(name='dsh_gateway',
+             description='直连本机 DSH web 网关（127.0.0.1:3080，0 重启）：status 列出正在运行的会话；session 读取会话投影（标题/进度/待办）；prompt 向指定会话投递一条用户消息（写操作，必须给出 session_id，不允许猜目标）。用于指挥正在运行的 DeepSeek Harness 会话。',
+             inputSchema=dict(type='object',properties=dict(
+                 action=dict(type='string',enum=['status','session','prompt']),
+                 session_id=dict(type='string'),text=dict(type='string'),
+                 mode=dict(type='string',enum=['queue','steer']),query=dict(type='string')),
+                 required=['action'],additionalProperties=False)),
+    ]
+
+
 def self_tools():
     from core.self_agent import TOOLS
     result=[dict(name=t['function']['name'], description=t['function']['description'],
                  inputSchema=t['function']['parameters'])
-            for t in TOOLS if t['function']['name'] in ('app_state', 'pet_control', 'workspace', 'applications')]
+            for t in TOOLS if t['function']['name'] in ('app_state', 'pet_control', 'workspace', 'applications', 'computer', 'wechat', 'pet_say', 'daily_plan', 'dsh_task')]
+    result.extend(extension_tools())
     result.append(dict(name='voice_session',description='控制咕嘎自己的实时语音会话；start受当前免费额度保护约束，status查看真实状态，stop结束通话；不自动重试。',
         inputSchema=dict(type='object',properties=dict(action=dict(type='string',enum=['start','status','stop'])),
                          required=['action'],additionalProperties=False)))
@@ -26,12 +57,19 @@ def self_tools():
     return result
 
 
+def plugin_tools():
+    return self_tools()+[dict(name='dsh_host_event',description='宿主内部生命周期回执，不向模型注册。',inputSchema=dict(
+        type='object',properties={key:dict(type='integer' if key in ('turn','step') else 'string') for key in
+        ('session_id','parent_session_id','event_id','kind','state','goal','summary','tool','reason','turn','step')},required=['session_id','kind'],additionalProperties=False))]
+
+
 def dsh_tools():
     from core.self_agent import TOOLS
-    allowed={'app_state','pet_control','workspace','applications','computer','local_computer','screen_share',
-             'browser','wechat','web_search','task_plan','music_performance'}
+    allowed={'app_state','pet_control','pet_say','daily_plan','workspace','applications','computer','local_computer','screen_share',
+             'browser','wechat','web_search','task_plan','music_performance','dsh_task'}
     result=[dict(name=t['function']['name'],description=t['function']['description'],inputSchema=t['function']['parameters'])
             for t in TOOLS if t['function']['name'] in allowed]
+    result.extend(extension_tools())
     result.extend([
         dict(name='voice_session',description='控制咕嘎自己的实时语音会话，不用电脑UI。start只在当前配置的免费额度保护通过时连接当前模型；status查看真实状态，stop结束通话。最多一段会话，不自动重试。',
              inputSchema=dict(type='object',properties=dict(action=dict(type='string',enum=['start','status','stop'])),
@@ -40,8 +78,9 @@ def dsh_tools():
              inputSchema=dict(type='object',properties=dict(action=dict(type='string',enum=['inspect','extract_frames','transcribe','render','status','wait','stop','submission']),
                  path=dict(type='string'),subtitles=dict(type='string'),job_id=dict(type='string'),seconds=dict(type='integer'),
                  title=dict(type='string'),description=dict(type='string')),required=['action'],additionalProperties=False)),
-        dict(name='personal_memory',description='用户的持久记忆。只保存明确偏好和可核对事实，不存凭据、隐私或推测。经验候选不自动启用。',
-             inputSchema=dict(type='object',properties=dict(action=dict(type='string',enum=['recall','list','remember','forget','propose_lesson','lessons']),
+        dict(name='personal_memory',description='与咕嘎共享的分层记忆：默认当前对话，项目事实只在本项目共享，稳定用户信息可跨对话。更正用update；不存凭据或推测；每日计划用daily_plan。经验候选不自动启用。',
+             inputSchema=dict(type='object',properties=dict(action=dict(type='string',enum=['recall','list','remember','update','forget','propose_lesson','lessons']),
+                 scope=dict(type='string',enum=['user','project','conversation']),
                  query=dict(type='string'),content=dict(type='string'),id=dict(type='integer')),required=['action'],additionalProperties=False)),
         dict(name='task_report',description='回报真实进展或交付；ready只是待验收，不代表独立验证成功。',
              inputSchema=dict(type='object',properties=dict(state=dict(type='string',enum=['progress','ready','blocked','failed','needs_input']),

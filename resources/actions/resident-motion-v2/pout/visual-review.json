@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "status": "needs-repair",
+  "reviewer": "Codex: source contact and real renderer 30fps review 2026-11-08",
+  "playback": "once",
+  "frames_sha256": "042dadb25b4c62bb170b68a113f3555d44de582d84cc5271eeb05c5a4690b058",
+  "checks": {
+    "identity": true,
+    "continuous_motion": true,
+    "no_ghosts": true,
+    "anatomy": false,
+    "entry_exit_transition": true,
+    "loop_seam": false
+  },
+  "runtime_review": {
+    "renderer_sha256": "dad478fea2720502e0b49465e7df1565e2189a4d1abe84d2b95d05b88505e720",
+    "contact": "runtime/resident-motion-20261108/after/contact.png",
+    "video": "runtime/resident-motion-20261108/after.mp4",
+    "settled_exit": true,
+    "full_figure_alpha_blending": false
+  },
+  "notes": [
+    "Preserved supplied character and native source motion; common body scale, padded canvas and aligned feet.",
+    "Natural end retains the settled source pose; explicit speech/drag/task overrides it immediately.",
+    "Expression differences between supplied videos remain; no claim of newly generated cinematic transitions.",
+    "2026-11-08: user identified missing right hood and hair outline; approval withdrawn until original source contour is restored."
+  ]
+}

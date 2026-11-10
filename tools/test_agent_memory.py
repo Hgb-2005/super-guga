@@ -40,12 +40,13 @@ class AgentMemoryTests(unittest.TestCase):
         self.assertIn('[REDACTED]',stored)
 
     def test_proactive_candidates_prefer_recent_user_topics_and_ignore_tiny_noise(self):
-        self.memory.add_dialogue('001','user','今天想继续把唱歌互动做得自然一点')
-        self.memory.add_dialogue('001','user','嗯')
+        self.memory.add_dialogue('001','user','今天想继续把唱歌互动做得自然一点',conversation_id='music')
+        self.memory.add_dialogue('001','user','嗯',conversation_id='music')
         self.memory.remember('001','主人喜欢偶尔主动聊项目进展',importance=4)
-        topics=self.memory.proactive_topics('001')
+        topics=self.memory.proactive_topics('001',conversation_id='music')
         self.assertTrue(topics);self.assertFalse(any(x=='嗯' for x in topics))
         self.assertTrue(any('唱歌' in x for x in topics))
+        self.assertFalse(any('唱歌' in x for x in self.memory.proactive_topics('001',conversation_id='other')))
 
 
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,23 @@
+{
+  "name": "pout",
+  "frames": 241,
+  "native_fps": 24.0,
+  "canvas": [
+    320,
+    416
+  ],
+  "body_span": 304.5,
+  "reference_body_span": 304.3612334801762,
+  "baseline": 408,
+  "source": "resources\\actions\\idle-motion\\pout\\frames",
+  "scale": 1.175139897606858,
+  "offset": [
+    27,
+    -1
+  ],
+  "edge_clipped_frames": 0,
+  "frame_sha256": "042dadb25b4c62bb170b68a113f3555d44de582d84cc5271eeb05c5a4690b058",
+  "source_pixels_preserved": true,
+  "reference_width": 245,
+  "native_motion": true
+}

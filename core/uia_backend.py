@@ -169,6 +169,29 @@ class UIABackend:
             if len(inputs)!=1:raise RuntimeError('页面输入框不唯一或不存在，请说具体名称，未发送操作')
             return dict(hwnd=int(hwnd),element=inputs[0][1])
 
+    def input_target(self,hwnd,search=False):
+        """A unique ordinary desktop field; browsers use page_input instead."""
+        with self.lock:
+            inputs=[pair for kind in ('Edit','ComboBox')
+                for pair in self._find(int(hwnd),control_type=kind)
+                if pair[1].get('enabled') and not pair[1].get('password')]
+            # A ComboBox may expose the same editable child. Prefer the actual
+            # text field when both describe the same on-screen area.
+            edits=[pair for pair in inputs if pair[1].get('type')=='Edit']
+            def contains_edit(pair):
+                outer=pair[1].get('rect') or {}
+                for _,item in edits:
+                    inner=item.get('rect') or {}
+                    if outer and inner and (outer['left']<=inner['left']<inner['right']<=outer['right'] and
+                            outer['top']<=inner['top']<inner['bottom']<=outer['bottom']):return True
+                return False
+            inputs=[pair for pair in inputs if pair[1].get('type')!='ComboBox' or not contains_edit(pair)]
+            if search:
+                inputs=[pair for pair in inputs if any(word in pair[1].get('name','').casefold()
+                    for word in ('搜索','查找','search','find'))]
+            if len(inputs)!=1:raise RuntimeError('输入框不唯一或不存在，请说具体名称，未发送操作')
+            return dict(hwnd=int(hwnd),element=inputs[0][1])
+
     def read(self,hwnd,**selector):
         with self.lock:
             _,item=self._resolve(hwnd,**selector)
@@ -201,6 +224,61 @@ class UIABackend:
             return dict(hwnd=hwnd,elements=items,truncated=len(items)>=limit,source='windows_uia',
                 elapsed_ms=round((time.monotonic()-started)*1000,2),visual_content=False)
 
+    def _input_value(self,element):
+        """Read ordinary edits, including older accessibility text providers."""
+        try:
+            pattern=element.GetCurrentPattern(self.Patterns['set_value'].Pattern)
+            return str(pattern.Current.Value),pattern,'value'
+        except Exception:pass
+        from System.Windows.Automation import LegacyIAccessiblePattern,TextPattern
+        try:
+            pattern=element.GetCurrentPattern(LegacyIAccessiblePattern.Pattern)
+            # STATE_SYSTEM_READONLY. An absent Value is not proof of an empty draft.
+            if int(pattern.Current.State)&0x40:raise RuntimeError('输入框只读，未发送操作')
+            value=pattern.Current.Value
+            if value is not None:return str(value),pattern,'legacy'
+        except RuntimeError:raise
+        except Exception:pass
+        try:
+            pattern=element.GetCurrentPattern(TextPattern.Pattern)
+            if pattern.DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute) is True:
+                raise RuntimeError('输入框只读，未发送操作')
+            # Preserve the raw length and trailing characters. Trimming before
+            # checking length could hide a truncated draft and lose its tail.
+            return str(pattern.DocumentRange.GetText(4001)),pattern,'text'
+        except RuntimeError:raise
+        except Exception:raise RuntimeError('无法完整读取当前输入框，请先核对，未发送操作') from None
+
+    def _replace_text_by_keys(self,hwnd,element,text):
+        """For a readable editable control without a native value setter."""
+        import ctypes
+        from ctypes import wintypes
+        import win32gui
+        from core.computer_control import _send_keys
+        def check():
+            if win32gui.GetForegroundWindow()!=hwnd or not bool(element.Current.HasKeyboardFocus):
+                raise RuntimeError('输入期间窗口或焦点改变，已停止；请核对，未自动重试')
+        element.SetFocus()
+        deadline=time.monotonic()+.15
+        while not bool(element.Current.HasKeyboardFocus) and time.monotonic()<deadline:time.sleep(.005)
+        check();_send_keys([17,65]);check()
+        class KI(ctypes.Structure):
+            _fields_=[('vk',wintypes.WORD),('scan',wintypes.WORD),('flags',wintypes.DWORD),('time',wintypes.DWORD),('extra',ctypes.c_size_t)]
+        class MI(ctypes.Structure):
+            _fields_=[('dx',wintypes.LONG),('dy',wintypes.LONG),('data',wintypes.DWORD),('flags',wintypes.DWORD),('time',wintypes.DWORD),('extra',ctypes.c_size_t)]
+        class U(ctypes.Union):_fields_=[('ki',KI),('mi',MI)]
+        class INPUT(ctypes.Structure):_fields_=[('type',wintypes.DWORD),('value',U)]
+        if not text:_send_keys([8]);return
+        encoded=text.encode('utf-16-le')
+        for offset in range(0,len(encoded),64):
+            check();events=[]
+            for index in range(offset,min(offset+64,len(encoded)),2):
+                scan=int.from_bytes(encoded[index:index+2],'little')
+                events.extend((INPUT(1,U(ki=KI(0,scan,4,0,0))),INPUT(1,U(ki=KI(0,scan,6,0,0)))))
+            values=(INPUT*len(events))(*events)
+            if ctypes.windll.user32.SendInput(len(events),values,ctypes.sizeof(INPUT))!=len(events):
+                raise RuntimeError('系统没有完整接收文字；请核对，未自动重试')
+
     def focused(self,hwnd):
         import win32gui
         with self.lock:
@@ -211,8 +289,9 @@ class UIABackend:
                 raise RuntimeError('当前焦点不是可填写的普通输入框，请先点击目标输入框')
             self.elements[item['ref']]=(element,time.monotonic(),int(hwnd))
             try:
-                value=str(element.GetCurrentPattern(self.Patterns['set_value'].Pattern).Current.Value)
+                value,_,source=self._input_value(element)
                 item['value']=value[:4000];item['value_truncated']=len(value)>4000
+                item['value_source']=source
             except Exception:raise RuntimeError('无法完整读取当前输入框，请先核对，未发送操作') from None
             return dict(hwnd=int(hwnd),element=item)
 
@@ -238,9 +317,15 @@ class UIABackend:
                         if pattern is not None:method='SelectionItemPattern';pattern.Select()
                 elif operation=='select':element.GetCurrentPattern(self.Patterns['select'].Pattern).Select();method='SelectionItemPattern'
                 elif operation=='set_value':
-                    pattern=element.GetCurrentPattern(self.Patterns['set_value'].Pattern)
-                    if pattern.Current.IsReadOnly:raise RuntimeError('输入框只读，未发送操作')
-                    method='ValuePattern';pattern.SetValue(str(value)[:4000])
+                    if item.get('type') not in ('Edit','ComboBox'):raise RuntimeError('目标不是普通输入框，未发送操作')
+                    _,pattern,source=self._input_value(element)
+                    if source=='value':
+                        if pattern.Current.IsReadOnly:raise RuntimeError('输入框只读，未发送操作')
+                        method='ValuePattern';pattern.SetValue(str(value)[:4000])
+                    elif source=='legacy':
+                        method='LegacyIAccessiblePattern';pattern.SetValue(str(value)[:4000])
+                    else:
+                        method='FocusedKeyboard';self._replace_text_by_keys(int(hwnd),element,str(value)[:4000])
                 elif operation=='toggle':element.GetCurrentPattern(self.Patterns['toggle'].Pattern).Toggle();method='TogglePattern'
                 elif operation in ('expand','collapse'):element.GetCurrentPattern(self.Patterns[operation].Pattern).Expand() if operation=='expand' else element.GetCurrentPattern(self.Patterns[operation].Pattern).Collapse();method=operation.title()+'Pattern'
                 elif operation=='scroll':element.GetCurrentPattern(self.Patterns['scroll'].Pattern).Scroll(-1,-1);method='ScrollPattern'
@@ -257,13 +342,18 @@ class UIABackend:
             if operation=='set_value':
                 deadline=time.monotonic()+.15
                 while True:
-                    actual=str(element.GetCurrentPattern(self.Patterns['set_value'].Pattern).Current.Value)
+                    actual,_,_=self._input_value(element)
                     verified=actual==str(value)[:4000]
                     if verified or time.monotonic()>=deadline:break
                     time.sleep(.005)
                 verification=dict(kind='value_equals',matched=verified)
             elif operation=='focus':
-                verified=bool(element.Current.HasKeyboardFocus);verification=dict(kind='keyboard_focus',matched=verified)
+                deadline=time.monotonic()+.15
+                while True:
+                    verified=bool(element.Current.HasKeyboardFocus)
+                    if verified or time.monotonic()>=deadline:break
+                    time.sleep(.005)
+                verification=dict(kind='keyboard_focus',matched=verified)
             return dict(hwnd=int(hwnd),input_sent=not fallback,action='uia',needs_observe=not verified,
                         verified=verified,verification=verification,
                         method=method or 'MouseFallback',fallback=fallback,control=item,rect=rect,

@@ -133,6 +133,8 @@ class PetWindow(QWidget):
         self._bubble_timer.timeout.connect(self._hide_bubble)
         self._chat_panel = None
         self._agent_panel = None
+        self._desktop_hidden = False
+        self._floating_launcher = None
         self._pending_voice_gesture = None
         from ui.speech_bubble import PetSpeechBubble
         self._agent_bubble = PetSpeechBubble(self)
@@ -192,6 +194,9 @@ class PetWindow(QWidget):
         self._voice_mode = False       # 按住说话模式
         self._asr = None
         self._recording = False
+        self._voice_record_timer = QTimer(self)
+        self._voice_record_timer.setSingleShot(True)
+        self._voice_record_timer.timeout.connect(self._stop_voice)
         self._realtime_voice = None
         self._voice_call_panel = None
         # _vision_done 只连助教槽; 战棋看牌单独走 _see_board 回调, 避免互相覆盖
@@ -234,6 +239,8 @@ class PetWindow(QWidget):
         self._load_state()
         from ui.screen_tools import ScreenTools
         self._screen_tools=ScreenTools(self,register=QApplication.platformName()!='offscreen')
+        if self._config._s.value('desktop/pet_hidden', False, type=bool):
+            self.set_pet_hidden(True)
 
         QTimer.singleShot(200, self._force_top)
         # 咕嘎企鹅启动问候
@@ -334,11 +341,13 @@ class PetWindow(QWidget):
         self._tray.setIcon(QIcon(icon_pm))
         self._tray.setToolTip("咕嘎企鹅桌宠")
         m = QMenu()
-        m.addAction("显示/隐藏").triggered.connect(
-            lambda: self.hide() if self.isVisible() else (self.show(), self._force_top()))
+        m.addAction("显示/隐藏桌宠（保留悬浮入口）").triggered.connect(
+            lambda: self.set_pet_hidden(not self._desktop_hidden))
         m.addSeparator()
         m.addAction("💬 展开完整对话（聊天/项目）").triggered.connect(self._open_agent_chat)
-        m.addAction("🎙 长语音 · 咕嘎智能体").triggered.connect(self._open_agent_voice)
+        m.addAction('桌面管理台 · 模型与语音设置').triggered.connect(self._open_desktop_console)
+        m.addAction("🎙 点击说话 · 录音后发送").triggered.connect(self._open_voice_recording)
+        m.addAction("实时语音 · 使用实时模型额度").triggered.connect(self._open_agent_voice)
         team=m.addMenu("👥 多智能体")
         team.addAction("召唤 002 · 大肥鱼").triggered.connect(lambda:self._multi_agent.summon('002'))
         team.addAction("召唤 003 · Dora").triggered.connect(lambda:self._multi_agent.summon('003'))
@@ -346,6 +355,7 @@ class PetWindow(QWidget):
         team.addAction("让咕嘎与大肥鱼讨论…").triggered.connect(lambda:self._multi_agent.start_discussion(('001','002')))
         m.addAction("⚙ 实时语音配置").triggered.connect(self._configure_realtime_voice)
         m.addAction("💭 陪伴与碎碎念…").triggered.connect(self._show_companion_settings)
+        m.addAction("☑ 每日计划…").triggered.connect(self._show_daily_plan)
         m.addAction("♟ 战棋决策实验室").triggered.connect(self._open_bg_agent)
         m.addAction("🎮 战棋实战操作").triggered.connect(self._open_bg_live)
         m.addAction("退出").triggered.connect(self._quit)
@@ -542,8 +552,7 @@ class PetWindow(QWidget):
         if e.button() == Qt.LeftButton:
             self._on_user_interaction()
             if self._voice_mode:
-                # 按住说话：按下开始录音
-                self._start_voice()
+                # Toggle on release, so holding the mouse is never required.
                 return
             self._drag_pos = e.globalPos()
             self._pet_physics.press(e.globalPos())
@@ -551,6 +560,7 @@ class PetWindow(QWidget):
             self.grabMouse()
 
     def mouseMoveEvent(self, e):
+        if self._voice_mode:return
         if e.buttons() & Qt.LeftButton:
             delta = e.globalPos() - self._drag_pos
             if delta.manhattanLength() > 3:
@@ -563,8 +573,8 @@ class PetWindow(QWidget):
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:
             if self._voice_mode:
-                # 松开发送
-                self._stop_voice()
+                if self._recording:self._stop_voice()
+                else:self._start_voice()
                 return
             self.releaseMouse()
             self._anim.set_dragging(False)
@@ -574,6 +584,7 @@ class PetWindow(QWidget):
             self._is_drag = False
 
     def mouseDoubleClickEvent(self, e):
+        if self._voice_mode:return
         self._click()
 
     def enterEvent(self, e):
@@ -627,16 +638,24 @@ class PetWindow(QWidget):
         self._menu_netcut = battle.addAction("⚡ 一键拔线（每局最多 9 次，F1）")
         self._menu_netcut.triggered.connect(self._netcut)
         menu.addAction("💬 展开完整对话").triggered.connect(self._open_agent_chat)
-        menu.addAction("🎙 长语音 · 边聊边执行").triggered.connect(self._open_agent_voice)
+        menu.addAction('桌面管理台 · 模型与语音设置').triggered.connect(self._open_desktop_console)
+        menu.addAction("隐藏桌宠 · 保留悬浮入口").triggered.connect(lambda:self.set_pet_hidden(True))
+        menu.addAction("🎙 点击说话 · 录音后发送").triggered.connect(self._open_voice_recording)
+        menu.addAction("实时语音 · 使用实时模型额度").triggered.connect(self._open_agent_voice)
         menu.addAction("💭 陪伴与碎碎念…").triggered.connect(self._show_companion_settings)
+        menu.addAction("☑ 每日计划…").triggered.connect(self._show_daily_plan)
         team = menu.addMenu("👥 多智能体")
         team.addAction("召唤 002 · 大肥鱼").triggered.connect(lambda:self._multi_agent.summon('002'))
         team.addAction("召唤 003 · Dora").triggered.connect(lambda:self._multi_agent.summon('003'))
         team.addAction("同时召唤大肥鱼和 Dora").triggered.connect(self._multi_agent.summon_pair)
         team.addAction("让咕嘎与大肥鱼讨论…").triggered.connect(lambda:self._multi_agent.start_discussion(('001','002')))
         team.addAction("展开完整对话 · 当前同伴").triggered.connect(self._open_agent_chat)
-        menu.addAction('截图分析').triggered.connect(lambda:self._screen_tools.begin('ask'))
+        menu.addAction('截图提问').triggered.connect(lambda:self._screen_tools.begin('region_ask'))
         menu.addAction('解释').triggered.connect(lambda:self._screen_tools.begin('explain'))
+        selection = menu.addAction('全局划词工具条')
+        selection.setCheckable(True);selection.setChecked(self._screen_tools.selection_enabled)
+        selection.toggled.connect(self._screen_tools.set_selection_enabled)
+        self._screen_tools.selection_enabled_changed.connect(selection.setChecked)
         menu.addAction('咕嘎大小…').triggered.connect(self._show_size_dialog)
         stage = menu.addMenu("🎵 音乐与动作")
         appearance = stage.addMenu("形象 · 可随时切换")
@@ -806,11 +825,39 @@ class PetWindow(QWidget):
             self._agent_panel = AgentChatWindow(self,memory=getattr(self,'_agent_memory',None))
         return self._agent_panel
 
+    def set_pet_hidden(self, hidden):
+        """Change only the desktop surface, keeping jobs and voice alive."""
+        hidden = bool(hidden)
+        self._desktop_hidden = hidden
+        self._config._s.setValue('desktop/pet_hidden', hidden)
+        if hidden:
+            from ui.desktop_launcher import DesktopLauncher
+            if self._floating_launcher is None:self._floating_launcher = DesktopLauncher(self)
+            self.hide();self._agent_bubble.hide();self._hide_inline()
+            self._floating_launcher.keep_on_screen();self._floating_launcher.show()
+        else:
+            if self._floating_launcher:self._floating_launcher.hide()
+            self.show();self._force_top()
+
     def _open_agent_chat(self):
         self._ensure_agent_panel()
         self._agent_panel.show()
         self._agent_panel.raise_()
         self._agent_panel.activateWindow()
+
+    def _open_desktop_console(self):
+        from ui.desktop_console import DesktopConsole
+        if getattr(self,'_desktop_console',None) is None:self._desktop_console=DesktopConsole(self)
+        self._desktop_console.show();self._desktop_console.raise_();self._desktop_console.activateWindow()
+
+    def _show_daily_plan(self):
+        panel=self._ensure_agent_panel()
+        from ui.daily_plan_dialog import DailyPlanDialog
+        if getattr(self,'_daily_plan_dialog',None) is None:
+            self._daily_plan_dialog=DailyPlanDialog(panel)
+        self._daily_plan_dialog.show()
+        self._daily_plan_dialog.raise_()
+        self._daily_plan_dialog.activateWindow()
 
     def _open_agent_voice(self):
         panel = self._ensure_agent_panel()
@@ -819,6 +866,14 @@ class PetWindow(QWidget):
         panel.hide()
         panel.voice_button.setChecked(True)
         QTimer.singleShot(120, lambda: self._finish_agent_voice_launch(panel))
+
+    def _open_voice_recording(self):
+        panel = self._ensure_agent_panel()
+        if panel.isVisible():panel.toggle_short_voice();return
+        if self._desktop_hidden:
+            self._open_agent_chat();panel.toggle_short_voice();return
+        self._show_agent_bubble('点击说话开始录音，录好后点 ↑ 发送，×取消。',panel.active_id)
+        self._agent_bubble._begin_talk()
 
     def _finish_agent_voice_launch(self, panel):
         # A user may click the bubble during the short startup delay.
@@ -838,7 +893,7 @@ class PetWindow(QWidget):
             self._agent_panel.voice_button.setChecked(False)
 
     def _on_bubble_clicked(self):
-        """The bubble is the voice surface: a click starts/keeps the long call.
+        """Record a draft through the same click/send bar used in chat.
 
         It must never open the full chat window: that steals focus and fights
         the live microphone. The full conversation has explicit menu entries.
@@ -848,9 +903,9 @@ class PetWindow(QWidget):
         if panel is not None:
             if panel.voice_active:
                 return
-            if panel.busy:
+            if panel.busy and panel._run_kind=='answer':
                 return
-        self._open_agent_voice()
+        self._open_voice_recording()
 
     def _open_bubble_chat(self):
         """Compatibility entry: explicit full conversation, never a bubble click."""
@@ -1134,8 +1189,10 @@ class PetWindow(QWidget):
         self._ai.ask(self._tutor_pending_text, system_override=TUTOR_SYSTEM)
 
     def _ask_with_ctx(self, text):
-        """问 AI 时若命中战绩关键词，注入最近战绩摘要（让咕嘎用战绩调侃你）"""
+        """Ordinary inline chat shares the companion model, memory and history."""
         import re
+        if not re.search(r'炉石|酒馆|战[棋旗绩]|对局|胜率',text):
+            return self._ensure_agent_panel().send(text)
         if re.search(r'(打开|启动|进入).*(炉石|酒馆战[棋旗])', text):
             self._open_bg_live()
             self._bg_live_panel.open_game()
@@ -1176,7 +1233,7 @@ class PetWindow(QWidget):
             return
         self._voice_mode = bool(checked)
         if self._voice_mode:
-            self._say_with_expression("咕嘎～按住本鹅说话，松开发送！", "normal", "none")
+            self._say_with_expression("咕嘎～点一下本鹅开始录音，再点一下发送！", "normal", "none")
         else:
             self._stop_voice()
             self._say_with_expression("咕嘎～语音模式关了。", "normal", "none")
@@ -1196,7 +1253,8 @@ class PetWindow(QWidget):
             return
         self._recording = True
         self._asr.start()
-        self._bubble_text = "🔴 录音中…松开发送"
+        self._bubble_text = "🔴 录音中…再点一下发送（最长30秒）"
+        self._voice_record_timer.start(30000)
         self._bubble_timer.start(60000)
         self.update()
 
@@ -1204,6 +1262,7 @@ class PetWindow(QWidget):
         if not self._recording:
             return
         self._recording = False
+        self._voice_record_timer.stop()
         self._bubble_timer.stop()
         text = self._asr.stop() if self._asr else ''
         if self._asr and self._asr.error:
@@ -2103,6 +2162,8 @@ class PetWindow(QWidget):
         self._config.save_status(s["hunger"], s["happy"], s["energy"])
 
     def _quit(self):
+        self._voice_record_timer.stop()
+        if self._floating_launcher:self._floating_launcher.hide()
         self._pet_physics.stop()
         if getattr(self,'_screen_tools',None):self._screen_tools.stop()
         if getattr(self,'_multi_agent',None):self._multi_agent.close()

@@ -31,6 +31,7 @@ class ProactiveConversation(QObject):
         self._topic_cursor=0;self._style_cursor=0
         self._news=[];self._news_at=0.0;self._news_error='';self._news_lock=threading.Lock()
         self._recent_generated=deque(maxlen=12)
+        self._daily_last_at=0.0
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.tick)
         self.offline_ready.connect(self._deliver_offline)
 
@@ -85,14 +86,21 @@ class ProactiveConversation(QObject):
         if self.last_at and now-self.last_at<self.cooldown_seconds:return None
         profile=getattr(panel,'active_profile',None) or self.memory.profile('001')
         if not profile:return None
-        candidates=self.memory.proactive_topics(profile['agent_id'],limit=16)
+        ident=getattr(panel,'active_id',None)
+        workspace=getattr(panel,'store',None)
+        project=(workspace.conversation(ident) or {}).get('project_id') if workspace and ident else None
+        candidates=self.memory.proactive_topics(profile['agent_id'],limit=16,conversation_id=ident,project_id=project)
         offset=self._topic_cursor%max(1,len(candidates));topics=(candidates[offset:]+candidates[:offset])[:4]
         style=self._style_cursor%4;self._style_cursor+=1
+        daily=getattr(getattr(panel,'runtime',None),'daily_plan',None)
+        if daily is not None and (not self._daily_last_at or now-self._daily_last_at>=600) and daily.snapshot()['total']:
+            style=4
         prompt=self._prompt(profile,topics,self._news_for_prompt(refresh=False),style)
         event='proactive-%s-%s'%(profile['agent_id'],int(now*1000))
         if in_call:
             sent=voice.notify_proactive(event,prompt,profile)
             if sent:
+                if style==4:self._daily_last_at=now
                 self._topic_cursor+=1
                 self.last_at=now;self.last_result=dict(event=event,mode='call',agent_id=profile['agent_id'],basis=topics[:2],style=style)
                 self.triggered.emit(self.last_result);return self.last_result
@@ -100,19 +108,23 @@ class ProactiveConversation(QObject):
         if self._compose_active:return None
         self._compose_active=True;self.last_at=now;self._topic_cursor+=1
         self._pending_context=dict(event=event,agent_id=profile['agent_id'],conversation_id=getattr(panel,'active_id',None),
-            last_activity=getattr(panel,'_last_user_activity',0.0))
+            last_activity=getattr(panel,'_last_user_activity',0.0),daily=style==4)
         self.last_result=dict(event=event,mode='offline',agent_id=profile['agent_id'],basis=topics[:2],style=style,state='composing')
         threading.Thread(target=self._compose_offline,args=(event,prompt,profile,topics,style),name='guga-proactive',daemon=True).start()
         return self.last_result
 
     def _prompt(self,profile,topics,news=None,style=0):
+        if style==4:
+            daily=getattr(getattr(self.panel,'runtime',None),'daily_plan',None)
+            if daily is not None:
+                return '你是%s。请用一两句温柔鼓励用户，不更改任何勾选。'%profile['display_name']+daily.reminder()
         if topics:
             memories='\n'.join('- '+str(x)[:500] for x in topics)
             basis='从这些真实长期记忆中选一个具体、不重复的话题。'
         else:
             memories='- 你的角色：%s；擅长：%s'%(profile['role'],profile['specialty'])
             basis='长期对话还少，可以按角色说一个容易接话的话题，不能假装记得没有记录的事。'
-        recent=[x['content'][:220] for x in self.memory.recent_dialogue(profile['agent_id'],limit=10) if x['role']=='assistant']
+        recent=[x['content'][:220] for x in self.memory.recent_dialogue(profile['agent_id'],limit=10,conversation_id=getattr(self.panel,'active_id',None)) if x['role']=='assistant']
         recent.extend(self._recent_generated)
         from core.companion_dialogue import current_time_instructions
         styles=(
@@ -156,6 +168,12 @@ class ProactiveConversation(QObject):
             with self._news_lock:self._news_error=type(exc).__name__
 
     def _compose_offline(self,event,prompt,profile=None,topics=None,style=0):
+        if style==4:
+            # Deterministic facts; no model or news round trip for a checklist reminder.
+            self._compose_active=False
+            daily=self.panel.runtime.daily_plan
+            self.offline_ready.emit(event,daily.encouragement())
+            return
         response=None;text='';error=''
         try:
             from core.ai_chat import AIChatEngine
@@ -181,7 +199,7 @@ class ProactiveConversation(QObject):
             from core.ai_chat import parse_reply
             from core.companion_dialogue import is_repetitive,plain_answer
             text=plain_answer(parse_reply(text)[2])
-            recent=[x['content'] for x in self.memory.recent_dialogue((profile or {}).get('agent_id','001'),limit=10) if x['role']=='assistant']
+            recent=[x['content'] for x in self.memory.recent_dialogue((profile or {}).get('agent_id','001'),limit=10,conversation_id=(self._pending_context or {}).get('conversation_id')) if x['role']=='assistant']
             recent.extend(self._recent_generated)
             if text and not is_repetitive(text,recent):
                 self._recent_generated.append(text[:900]);self.offline_ready.emit(event,text[:900])
@@ -200,9 +218,14 @@ class ProactiveConversation(QObject):
             or context.get('agent_id')!=getattr(panel,'active_agent_id',context.get('agent_id'))
             or getattr(panel,'_last_user_activity',0.0)>context.get('last_activity',0.0)):
             self.last_result.update(state='superseded');return
+        if context.get('daily'):
+            text=panel.runtime.daily_plan.encouragement()
+            if not text:
+                self.last_result.update(state='superseded');return
+            self._daily_last_at=time.monotonic()
         ident=getattr(panel,'active_id',None)
         if ident:
-            panel.store.append(ident,'assistant',text);panel.memory.add_dialogue(panel.active_agent_id,'assistant',text)
+            panel.store.append(ident,'assistant',text);panel._remember_dialogue(panel.active_agent_id,'assistant',text,ident)
         if hasattr(panel,'_say_active_reply'):
             panel._say_active_reply(text,'happy','none',speak=self.offline_speak,conversation_id=ident)
         else:

@@ -28,6 +28,14 @@ class AppRuntime:
         self.media=MediaWorkflow(self.store.path.parent/'video-workflows')
         from core.workflow_catalog import WorkflowCatalog
         self.workflows=WorkflowCatalog(self.store.path.parent/'workflows.sqlite3')
+        from core.daily_plan import DailyPlan
+        self.daily_plan=DailyPlan(self.store.path.parent/'daily-plan.sqlite3')
+        from core.companion_memory import CompanionMemory
+        self.companion_memory=CompanionMemory(panel.memory,self.store,self.daily_plan)
+        from core.dsh_link import DshLink
+        self.dsh_link=DshLink(panel)
+        import threading
+        self.external_desktop_lock=threading.Lock()
         self._restore_upgrade_playback()
 
     def _restore_upgrade_playback(self):
@@ -50,6 +58,86 @@ class AppRuntime:
         except (OSError,ValueError,TypeError):pass
 
     def execute(self, name, args):
+        if name=='personal_memory':
+            return self.companion_memory.execute(self.panel.active_agent_id,self.panel.active_id,args)
+        if name=='dsh_link':return self.dsh_link.execute(args)
+        if name=='daily_plan':
+            args=dict(args)
+            if args.pop('open_window',False) or args.get('action')=='open':
+                self.pet._show_daily_plan()
+                args['action']='list'
+            result=self.daily_plan.execute(args)
+            dialog=getattr(self.pet,'_daily_plan_dialog',None)
+            if dialog is not None and dialog.isVisible():dialog.refresh()
+            return result
+        if name in ('computer','wechat'):
+            import threading
+            if self.panel.busy or getattr(self.panel,'_fast_inflight',False) or self.dsh.status().get('running'):
+                raise RuntimeError('咕嘎已有任务占用桌面，请等待结束或先停止；本次未发送输入')
+            executor=getattr(self.panel.agent,name,None)
+            if executor is None:raise RuntimeError('桌面智能体尚未初始化')
+            if not self.external_desktop_lock.acquire(blocking=False):
+                raise RuntimeError('已有外部桌面操作正在执行，本次未发送输入')
+            try:return executor.execute(args,threading.Event())
+            finally:self.external_desktop_lock.release()
+        if name=='pet_say':
+            text=str(args.get('text','')).strip()
+            if not text:raise ValueError('text不能为空')
+            self.panel._show_active_bubble(text[:1200])
+            return dict(ok=True,shown=True,chars=len(text[:1200]))
+        if name=='screen_context':
+            from core.super_agent import screen_context as screen_ctx
+            action=str(args.get('action','status')).lower()
+            try:
+                if action in ('start','watch'):return dict(ok=True,**screen_ctx.start_watching('mcp'))
+                if action in ('stop','unwatch'):return dict(ok=True,**screen_ctx.stop_watching())
+                if action=='summary':return dict(ok=True,summary=screen_ctx.summary_line(),stats=screen_ctx.get_watcher().status())
+                if action in ('context','status'):
+                    return dict(ok=True,active=screen_ctx.get_watcher().active,context=screen_ctx.context(),
+                        stats=screen_ctx.get_watcher().status(),summary=screen_ctx.summary_line())
+            except Exception as exc:
+                return dict(ok=False,error=type(exc).__name__+': '+str(exc))
+            raise ValueError('未知屏幕感知操作')
+        if name=='desktop_command':
+            from core.super_agent import desktop_command
+            return desktop_command.handle(args.get('action','list'),args.get('target') or args.get('name',''),args.get('query',''))
+        if name=='lingshu_memory':
+            from core.super_agent import lingshu_memory
+            return lingshu_memory.handle(args.get('action','status'),args.get('query',''),args.get('title',''),args.get('content',''))
+        if name=='dsh_gateway':
+            from core.super_agent import dsh_gateway as gateway
+            action=str(args.get('action','status')).strip().lower()
+            try:
+                client=gateway.DshGateway()
+                if action in ('status','list'):
+                    items=client.session_summaries()
+                    items=sorted(items,key=lambda item:float(item.get('updatedAt') or 0),reverse=True)
+                    slim=[]
+                    for item in items[:40]:
+                        projections=item.get('projections') if isinstance(item.get('projections'),dict) else {}
+                        slim.append(dict(session_id=str(item.get('sessionId') or ''),
+                            running=bool(item.get('running')),cwd=str(item.get('cwd') or '')[:140],
+                            title=gateway.session_title(item)[:80]))
+                    return dict(ok=True,total=len(items),sessions=slim,
+                        focused=getattr(self.dsh_link,'focused_session',''),
+                        current=client.current_session_id())
+                if action=='session':
+                    session_id=str(args.get('session_id') or '').strip()
+                    if not session_id:
+                        session_id=gateway.session_id_from_focused(
+                            getattr(self.dsh_link,'focused_session',''),client.session_summaries())
+                    if not session_id:
+                        session_id=client.current_session_id()
+                    if not session_id:raise ValueError('没有可读会话：请提供 session_id')
+                    return dict(ok=True,**client.session_view(session_id))
+                if action=='prompt':
+                    session_id=str(args.get('session_id') or '').strip()
+                    text=str(args.get('text') or '').strip()
+                    if not session_id or not text:raise ValueError('prompt 需要 session_id 与 text（不允许猜目标会话）')
+                    return dict(ok=True,**client.prompt(session_id,text,mode=args.get('mode') or 'queue'))
+            except Exception as exc:
+                return dict(ok=False,error=type(exc).__name__+': '+str(exc)[:300])
+            raise ValueError('未知 DSH 网关操作')
         if name=='screen_share':
             action=args.get('action')
             if action=='start':
@@ -122,7 +210,7 @@ class AppRuntime:
             if action=='start':
                 accepted=self.dsh.start(args.get('task',''),self.panel.active_id,args.get('cwd'),
                     args.get('seconds',900),args.get('session_id'),profile=dict(self.panel.active_profile),
-                    memory_context='\n'.join(x['content'] for x in self.panel.memory.recall(self.panel.active_agent_id,args.get('task',''),limit=6)),
+                    memory_context=self.companion_memory.context(self.panel.active_agent_id,args.get('task',''),self.panel.active_id),
                     workflow=self.workflows.match(args.get('task','')))
                 self.pet._multi_agent.work_state(self.panel.active_agent_id,'thinking','dsh:'+accepted['job_id'])
                 return accepted
@@ -145,8 +233,15 @@ class AppRuntime:
                 from core.fast_commands import match
                 text=str(args.get('name',''))
                 if not match(text).get('matched'):raise ValueError('仅支持已识别的本地快速命令；本操作不会转交大模型')
-                self.panel.send(text)
-                return dict(self.panel._last_fast_result or {},route='local_fast_command')
+                import uuid
+                if self.panel.busy or getattr(self.panel,'_fast_inflight',False):
+                    raise RuntimeError('咕嘎正在执行其他任务，本次未提交快速命令')
+                receipt=uuid.uuid4().hex
+                self.panel.send(text,execution_context={'_receipt_id':receipt,'_external_fast':True})
+                result=dict(self.panel._last_fast_result or {})
+                if result.get('receipt_id')!=receipt:
+                    result=dict(ok=True,execution_pending=True,receipt_id=receipt,message='命令已提交，等待实际结果')
+                return dict(result,route='local_fast_command')
             if args.get('action') == 'list':
                 entries=self.apps.available(args.get('query',''))
                 from core.window_inventory import list_windows
@@ -155,7 +250,19 @@ class AppRuntime:
                     'access':self.apps.access.status(),
                     'note':'running_windows是已打开软件，authorized_apps是可启动软件；先复用已打开窗口。'}
             if args.get('action') == 'open':
-                return self.apps.open(args['name'])
+                result=self.apps.open(args['name'])
+                if result.get('verified_running') or result.get('selection_required'):return result
+                import time
+                from core.window_inventory import list_windows
+                from pathlib import Path
+                query=str(args['name'])
+                if Path(query).is_absolute():query=Path(query).stem
+                deadline=time.monotonic()+8
+                while time.monotonic()<deadline:
+                    windows=list_windows(query)
+                    if windows:return dict(result,ok=True,verified_running=True,windows=windows[:5],message='已核对目标软件窗口出现')
+                    time.sleep(.3)
+                return dict(result,ok=False,verified_running=False,error='已请求启动，但8秒内未核对到目标软件窗口；不要盲目重复启动')
             raise ValueError('未知软件操作')
         if name == 'confirm_external':
             if self.apps.access.enabled:
@@ -182,20 +289,36 @@ class AppRuntime:
             from core.authorized_apps import ROOT
             from core.realtime_agent import ROUTER_VERSION
             from core.self_agent import HARNESS_VERSION
-            return dict(runtime=dict(pid=os.getpid(),project_root=str(ROOT),voice_router_version=ROUTER_VERSION),
+            daily_dialog=getattr(self.pet,'_daily_plan_dialog',None)
+            from core.model_settings import public_settings
+            return dict(runtime=dict(pid=os.getpid(),project_root=str(ROOT),voice_router_version=ROUTER_VERSION,
+                                     daily_plugin_version='2026-11-10.daily-dsh.1'),
+                        desktop_entry_version='2026-11-10.independent-chat-memory.4',
+                        models=public_settings(),
+                        model_answer=dict(getattr(self.panel.answer,'last_receipt',{})),
+                        desktop=dict(chat_visible=self.panel.isVisible(),chat_hwnd=int(self.panel.winId()),
+                                     pet_hidden=bool(getattr(self.pet,'_desktop_hidden',False)),
+                                     platform=QApplication.platformName()),
+                        daily_plan=dict(self.daily_plan.snapshot(),dialog_visible=bool(daily_dialog and daily_dialog.isVisible()),
+                                        dialog_hwnd=int(daily_dialog.winId()) if daily_dialog else None),
                         agent_harness_version=HARNESS_VERSION,
+                        companion_memory=dict(position='管家与陪伴伙伴',scopes=['user','project','conversation'],
+                            dialogue_source='current_conversation_only',daily_plan_source=str(self.daily_plan.path)),
                         pet=dict(x=self.pet.x(), y=self.pet.y(), visible=self.pet.isVisible(),
                                 opacity=self.pet.windowOpacity(), status=self.pet._status.snapshot(),
                                 volume=self.pet._tts._player.volume()),
                         current_conversation_id=self.panel.active_id,
                         voice_active=self.panel.voice_active,
+                        local_voice=dict(active=bool(self.panel.short_voice.active),
+                                         mode='click_record_send',phase=self.panel.short_voice.phase,
+                                         recognition='vosk',speech='edge-tts',realtime_quota_used=False),
                         voice_path=dict(owner_only=bool(self.panel.voice._cfg.get('owner_only',False)) if self.panel.voice else False,
                             speaker_gate_active=bool(self.panel.voice and self.panel.voice._speaker_gate),
                             interaction=self.panel.voice.interaction_status() if self.panel.voice else None),
                         workspace=self.store.snapshot(),
                         authorized_apps=list(self.apps.entries()),
                         battleground=self.battleground.status(),
-                        dsh=self.dsh.status(),
+                        dsh=self.dsh.status(),dsh_link=self.dsh_link.status(),
                         screen_share=dict(self.screen_share.status(),
                             call_expected=bool(self.panel.voice_active and not self.panel._screen_share_manual_stop),
                             watchdog_active=self.panel._screen_share_watchdog_timer.isActive(),
@@ -212,11 +335,15 @@ class AppRuntime:
                         assistant_contract=dict(version=HARNESS_VERSION,routing='local_first_dsh_for_complex_engineering',
                             browser_control=dict(mode='current_page_single_step',task_model=False,
                                 success_feedback='immediate_bubble',manual_quiet_seconds=60),
+                            desktop_control=dict(version=ROUTER_VERSION,mode='foreground_single_step',
+                                task_model=False,numbered_targets=True,visual_fallback='on_native_target_missing',
+                                success_feedback='immediate_bubble_no_audio',automatic_retry=False,
+                                workflow_recording=False),
                             conversation=dict(mode='awake' if self.panel.voice_active else 'companion',
                                 companion_interval_seconds=self.panel.proactive.interval_seconds,
                                 news_refresh_seconds=self.panel.proactive.news_refresh_seconds,
                                 task_progress_seconds=30,foreground_qa_independent=True,
-                                hold_to_talk_in_speech_bubble=True,speech_bubble_count=1,
+                                hold_to_talk_in_speech_bubble=False,click_to_talk_in_speech_bubble=True,speech_bubble_count=1,
                                 qa_search='public_snippets_with_sources',profile_memory='explicit_user_facts'),
                             voice_control='local_mcp_start_status_stop_free_guard_v1',
                             fast_action_running=bool(getattr(self.panel,'_fast_inflight',False) or getattr(self.panel,'_fast_launch_count',0)),
@@ -235,10 +362,11 @@ class AppRuntime:
                                    task_animation=self.pet._anim2d.task_animation_status(),
                                    gesture_version='2026-11-02.1',
                                    selection_trigger='uia_text_geometry_before_capture',
-                                   selection_actions=['解释','截图分析'],
+                                   selection_actions=['解释','截图提问'],
                                    menu_version='2026-11-02.3',
-                                   selection_reading='cached_visual_region',
+                                   selection_reading='verified_text_first_cached_image_for_question',
                                    selection_status=getattr(getattr(self.pet,'_screen_tools',None),'last_selection_status','unavailable'),
+                                   selection_probe=dict(getattr(getattr(self.pet,'_screen_tools',None),'selection_diagnostics',{})),
                                    chat_route=self.panel.route_combo.currentData(),
                                    answer_effort=self.panel.effort_combo.currentData(),
                                    short_voice_active=self.panel.short_voice.active,
@@ -254,7 +382,7 @@ class AppRuntime:
                         active_agent=dict(id=self.panel.active_agent_id,profile=self.panel.active_profile),
                         local_access=self.apps.access.status(),
                         task=self.panel.agent.task_status(),
-                        capabilities=['pet_control', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','dsh_task','local_computer','computer','screen_share','task_plan','media_workflow','workflow_catalog','wechat_send_self','wechat','browser','web_search','music_performance'],
+                        capabilities=['pet_control','pet_say','daily_plan','personal_memory', 'workspace', 'applications', 'self_ask', 'ecosystem','battleground','dsh_task','local_computer','computer','screen_share','task_plan','media_workflow','workflow_catalog','wechat_send_self','wechat','browser','web_search','music_performance'],
                         scope='本机能力由完整访问开关控制；继承咕嘎进程实际Windows权限')
         if name == 'pet_control':
             return self._pet(args)
@@ -333,8 +461,9 @@ class AppRuntime:
                 pet._bongo_on = False
                 pet.setFixedSize(pet._iw, pet._ih)
         elif action == 'open_chat':
-            self.panel.show()
-            self.panel.raise_()
+            pet._open_agent_chat()
+        elif action == 'open_desktop_console':
+            pet._open_desktop_console()
         elif action == 'open_voice_settings':
             # Deferred to avoid blocking the queued tool callback in a modal dialog.
             from PyQt5.QtCore import QTimer
@@ -359,7 +488,7 @@ class AppRuntime:
                 raise ValueError('更名项目需要明确的项目 ID')
             self.store.rename('project', ident, args['name'])
         elif action == 'new_conversation':
-            result['conversation_id'] = self.store.create_conversation(args.get('name', '新对话'), args.get('project_id') or None)
+            result['conversation_id'] = self.store.create_conversation(args.get('name', '新对话'), args.get('project_id') or None,agent_id=self.panel.active_agent_id)
             # Keep this running turn bound to its original conversation.
         elif action == 'rename_conversation':
             self.store.rename('conversation', ident, args['name'])

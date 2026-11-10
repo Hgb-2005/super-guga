@@ -1,34 +1,53 @@
-﻿param([long]$WindowHandle)
+﻿param([long]$WindowHandle,[double]$X=[double]::NaN,[double]$Y=[double]::NaN)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
 $root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$WindowHandle)
 $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
-$result=@{text='';context='';source=$root.Current.Name}
+$result=@{text='';context='';source=$root.Current.Name;source_checked=$true;password=$false}
 $candidates=[System.Collections.Generic.List[object]]::new()
-$node=$focused
-for($i=0;$i -lt 6 -and $null -ne $node;$i++) {
+function Add-SourceBranch($node) {
+ $branch=[System.Collections.Generic.List[object]]::new();$belongs=$false
+ for($i=0;$i -lt 18 -and $null -ne $node;$i++) {
   try {
-    if($node.Current.ProcessId -ne $root.Current.ProcessId){break}
-    $candidates.Add($node)
-    $node=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+   $branch.Add($node)
+   if($node.Equals($root) -or $node.Current.NativeWindowHandle -eq $WindowHandle){$belongs=$true;break}
+   $node=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
   } catch {break}
+ }
+ if($belongs){foreach($item in $branch){$candidates.Add($item)}}
 }
+if(-not [double]::IsNaN($X) -and -not [double]::IsNaN($Y)) {
+ try {Add-SourceBranch ([System.Windows.Automation.AutomationElement]::FromPoint([System.Windows.Point]::new($X,$Y)))} catch {}
+}
+Add-SourceBranch $focused
 $candidates.Add($root)
 function Read-Selection($elements) {
  foreach($item in $elements) {
   if($null -eq $item){continue}
   try {
-    if($item.Current.IsPassword){continue}
+    if($item.Current.IsPassword){$result.password=$true;continue}
+    if($item.Current.IsOffscreen){continue}
     $pattern=$item.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
     foreach($range in $pattern.GetSelection()) {
       $text=$range.GetText(2000)
       if([string]::IsNullOrWhiteSpace($text)){continue}
-      $context=$range.Clone()
-      $context.ExpandToEnclosingUnit([System.Windows.Automation.TextUnit]::Paragraph)
-      $result.text=$text;$result.context=$context.GetText(6000)
-      $result.bounds=@($range.GetBoundingRectangles())
+      # Text is authoritative. Optional provider operations must never erase
+      # a valid selection (Qt/Chromium may reject Paragraph expansion/rectangles).
+      $result.text=$text;$result.context=$text;$result.bounds=@()
+      $result.selection_verified=$true
+      try {$result.bounds=@($range.GetBoundingRectangles())} catch {}
+      try {
+       $rect=$item.Current.BoundingRectangle
+       $result.element_bounds=@($rect.X,$rect.Y,$rect.Width,$rect.Height)
+      } catch {}
+      try {
+       $context=$range.Clone()
+       $context.ExpandToEnclosingUnit([System.Windows.Automation.TextUnit]::Paragraph)
+       $result.context=$context.GetText(6000)
+      } catch {}
       return $true
     }
   } catch {}

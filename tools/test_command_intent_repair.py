@@ -16,6 +16,33 @@ from core.authorized_apps import AuthorizedApps
 
 
 class CommandIntentTests(unittest.TestCase):
+    def test_actual_spoken_launch_requests_do_not_depend_on_model_tool_calls(self):
+        for text,target in (('嗯，打开微信。','微信'),('你现在重新打开微信。','微信'),
+                            ('先不打开微信了，打开豆包浏览器。','豆包浏览器'),
+                            ('好的，帮我打开浏览器。','浏览器')):
+            with self.subTest(text=text):
+                command=match(text)
+                self.assertTrue(command['matched'])
+                self.assertEqual(command['action'],'open_app')
+                self.assertEqual(command['target'],target)
+
+    def test_filler_cleanup_never_turns_negations_or_quotations_into_launches(self):
+        for text in ('嗯，不要打开微信。','现在不要打开浏览器','先不打开微信了',
+                     '他说打开微信','“嗯，打开微信”是什么意思','重新打开微信是什么意思'):
+            with self.subTest(text=text):self.assertFalse(match(text)['matched'])
+
+    def test_transcription_dispatches_even_when_native_voice_model_never_calls_tool(self):
+        from core.realtime_agent import AgentRealtimeVoice
+        voice=AgentRealtimeVoice();commands=[];voice.fast_command.connect(commands.append)
+        voice._handle_event(dict(type='input_audio_buffer.speech_started'))
+        voice._handle_event(dict(type='conversation.item.input_audio_transcription.completed',
+                                 transcript='嗯，打开微信。'))
+        self.assertEqual(len(commands),1)
+        self.assertEqual(commands[0]['target'],'微信')
+        # A late FC for that same turn must reuse the actual execution.
+        voice._handoff_request('late-tool','打开微信')
+        self.assertEqual(len(commands),1)
+
     def test_question_in_message_body_does_not_turn_request_into_qa(self):
         for text in ('打开，微信，找到验收联系人，发送，最近怎么样，忙完了吗',
                      '打开微信，给验收联系人发送“你在哪里？”',

@@ -85,7 +85,9 @@ class WorkspaceTests(unittest.TestCase):
         try:
             client.initialize()
             names = {t['name'] for t in client.request('tools/list')['tools']}
-            self.assertEqual(names, {'app_state', 'pet_control', 'workspace', 'applications','voice_session','screen_share'})
+            self.assertEqual(names, {'app_state', 'pet_control', 'workspace', 'applications','voice_session','screen_share',
+                                     'daily_plan','computer','wechat','pet_say','dsh_task',
+                                     'screen_context','desktop_command','lingshu_memory','dsh_gateway'})
         finally:
             client.close()
         self.assertIsNotNone(client.proc.poll())

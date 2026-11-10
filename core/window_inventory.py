@@ -25,6 +25,10 @@ def matching_windows(windows, query=''):
         return any(term in process or term == ntpath.splitext(ntpath.basename(executable))[0]
                    for term in terms) or (query.endswith('.exe') and process == stem + '.exe')
     processes = [window for window in windows if matches_process(window)]
+    if query=='豆包浏览器':
+        # Doubao's chat app and browser share Doubao.exe. A browser request
+        # must not become an ambiguous choice between the two products.
+        processes=[window for window in processes if '豆包浏览器' in str(window.get('title',''))]
     # Prefer executable identity over an unrelated document merely mentioning the app.
     # A known app identity must not degrade into a title substring: 企业微信
     # and a document mentioning 微信 are not the Weixin/WeChat application.

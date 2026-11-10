@@ -63,13 +63,16 @@ class ResponsiveTests(unittest.TestCase):
 
     def test_misrouted_screen_question_stays_out_of_execution_agent(self):
         voice=AgentRealtimeVoice();voice.screen_context_provider=lambda:dict(active=True,fresh=True,context='蓝色圆形')
-        reads=[];tasks=[]
+        reads=[];tasks=[];fast=[]
         voice.screen_question_requested.connect(lambda *args:reads.append(args))
         voice.task_requested.connect(lambda *args:tasks.append(args))
+        voice.fast_command.connect(fast.append)
         voice._handoff_request('screen','你现在能看到我的屏幕吗？')
         self.assertEqual(reads,[('screen','你现在能看到我的屏幕吗？')]);self.assertFalse(tasks)
         voice._handoff_request('action','请帮我点击屏幕里的提交按钮')
-        self.assertEqual(len(tasks),1)
+        self.assertFalse(tasks)
+        self.assertEqual(len(fast),1)
+        self.assertIn(fast[0]['action'],('desktop_step','browser_step'))
 
     def test_application_launch_does_not_hold_qt_event_loop(self):
         release=threading.Event();started=threading.Event();tick=[]

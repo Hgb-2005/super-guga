@@ -1,0 +1,10 @@
+{
+  "name": "dsh-guga-desktop",
+  "version": "0.1.0",
+  "description": "咕嘎：桌面操作、每日计划与 DSH 会话进度陪伴",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": { ".": "./index.mjs", "./package.json": "./package.json", "./locale/*": "./locale/*", "./dsh-plugin.json": "./dsh-plugin.json" },
+  "files": ["index.mjs", "cordis.patch.yml", "dsh-plugin.json", "locale"],
+  "dsh": { "engines": {"dsh": ">=0.2.1-rc.5"}, "bundle": {"patch": "./cordis.patch.yml"} }
+}

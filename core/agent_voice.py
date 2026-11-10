@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import time
+import re
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -81,6 +82,7 @@ class AgentVoice(QObject):
                         if ready or time.monotonic() - started > 20:
                             result = recognizer.Result() if ready else recognizer.FinalResult()
                             text = json.loads(result).get('text', '').strip()
+                            text = re.sub(r'(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])', '', text)
                             started = time.monotonic()
                             if text:
                                 self.listening.clear()

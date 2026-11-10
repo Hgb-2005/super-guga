@@ -10,6 +10,13 @@ from core.window_inventory import matching_windows
 from core.authorized_apps import AuthorizedApps
 
 class DiscoveryTests(unittest.TestCase):
+    def test_doubao_browser_excludes_chat_window_in_same_process(self):
+        windows=[dict(hwnd=1,title='豆包',process_name='Doubao.exe'),
+                 dict(hwnd=2,title='测试页 - 豆包浏览器',process_name='Doubao.exe'),
+                 dict(hwnd=3,title='豆包浏览器说明.txt',process_name='notepad.exe')]
+        self.assertEqual(matching_windows(windows,'豆包浏览器'),[windows[1]])
+        self.assertEqual(matching_windows(windows,'豆包'),windows[:2])
+
     def test_process_finds_document_title_and_minimized_window(self):
         windows=[dict(hwnd=1,title='小军',process_name='Weixin.exe',executable='G:\\Weixin.exe',minimized=True),
                  dict(hwnd=2,title='论文.txt',process_name='notepad.exe',executable='C:\\Windows\\notepad.exe')]

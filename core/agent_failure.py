@@ -65,6 +65,8 @@ def explain_failure(error, *, diagnostic=None, operations=0, events=(), blockers
         impact=f'已调用工具{operations}次，其中{successes}次返回成功；这些回执不等于整个目标完成。'
         if events:impact+='最后一个工具是'+str(events[-1].get('tool','未知工具'))+'。'
     next_step=diagnostic.get('next_step') or (
+        '这不是目标找不到，而是动作名不受支持：要按键盘改用 press(keys=enter)，'
+        '要点按改用 click，然后 observe 核对画面是否真的变了' if '未知屏幕操作' in reason else
         '请先切到要操作的目标页面，我再重新观察后继续' if last_tool_failure.get('code') in
         ('target_ambiguous','target_not_foreground','target_missing','tab_unavailable') else
         '先重新观察目标并核对最后一步，再处理尚未完成的部分')

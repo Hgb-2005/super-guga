@@ -9,7 +9,7 @@ from core.desktop_access import redact
 ROOT=Path(__file__).resolve().parents[1]
 DEFAULT_PATH=ROOT/'runtime/multiagent/memory.sqlite3'
 PROFILES={
-    '001':dict(display_name='咕嘎',role='总执行官',specialty='综合分析、通用任务、电脑操作与项目监督',expression='happy',appearance='guga'),
+    '001':dict(display_name='咕嘎',role='管家与陪伴伙伴',specialty='日常陪伴、习惯与计划管理、生活协助、电脑事务与任务协调',expression='happy',appearance='guga'),
     '002':dict(display_name='大肥鱼',role='技术审查员',specialty='DeepSeek Harness、方案审查、长任务拆解、测试验收与漏洞检查',expression='surprised',appearance='dafish'),
     '003':dict(display_name='Dora',role='橘子创意搭档',specialty='创意陪伴、音乐、橘子、生活话题与用户体验；同咕嘎一样可执行全部任务',expression='happy',appearance='dora'),
 }
@@ -39,13 +39,18 @@ def profile_facts(text,previous=''):
     """
     text=str(text or '').strip()
     if (not text or safe_text(text)!=text or len(text)>2000 or
-        re.search(r'[“”「」『』"<>]|https?://|\b(?:password|token|api.?key)\b|密码|密钥|令牌|身份证|手机号|邮箱',text,re.I)):
+        re.search(r'[“”「」『』"<>]|https?://|\b(?:password|token|api.?key)\b|密码|密钥|令牌|身份证|手机号|邮箱|不要记|别记|不用记|不保存|别保存|不要保存',text,re.I)):
         return []
     out=[]
     for clause in re.split(r'[，,。！!；;\n]',text):
         clause=clause.strip()
         if not clause or any(x in clause for x in ('如果','假如','假设','比如','例如','他说','她说','角色扮演','写故事',
             '什么','怎么','如何','是否','是不是','能不能','还是','吗','？','?')):continue
+        address=re.fullmatch(r'(?:请)?(?:以后)?(?:叫我|称呼我为)\s*([\w\u4e00-\u9fff]{1,20})',clause)
+        if address and not re.search(r'\d{7,}',address[1]):
+            out.append(('profile:address','用户希望被称呼为：'+address[1]))
+        communication=re.fullmatch(r'(?:请)?(?:以后|平时)(?:都)?(?:用|使用)(简体中文|中文|英语|英文)(?:跟我|和我)?(?:交流|聊天|说话|回答)',clause)
+        if communication:out.append(('profile:language','用户交流语言偏好：'+communication[1]))
         occupation=re.fullmatch(r'(?:我(?:现在|目前)?(?:的职业是|的工作是|从事|是一?名?|是一?个)|职业[：:])\s*(.{2,30})',clause)
         if occupation:
             value=occupation.group(1).strip()
@@ -94,6 +99,16 @@ class AgentMemoryStore:
             ''')
             columns={row[1] for row in db.execute('PRAGMA table_info(agent_profiles)')}
             if 'appearance' not in columns:db.execute("ALTER TABLE agent_profiles ADD COLUMN appearance TEXT NOT NULL DEFAULT 'guga'")
+            # Additive migration: old dialogue is retained, never assigned to a guessed chat.
+            for table, additions in (
+                ('agent_dialogue', [('conversation_id', "TEXT NOT NULL DEFAULT ''"), ('project_id', "TEXT NOT NULL DEFAULT ''")]),
+                ('agent_facts', [('scope', "TEXT NOT NULL DEFAULT 'agent'"), ('scope_id', "TEXT NOT NULL DEFAULT ''"),
+                                 ('source_conversation', "TEXT NOT NULL DEFAULT ''")])):
+                existing_columns={row[1] for row in db.execute('PRAGMA table_info('+table+')')}
+                for name,definition in additions:
+                    if name not in existing_columns:db.execute('ALTER TABLE '+table+' ADD COLUMN '+name+' '+definition)
+            db.execute("UPDATE agent_facts SET scope='user' WHERE scope='agent' AND (kind LIKE 'profile:%' OR kind='user_preference')")
+            db.execute('CREATE INDEX IF NOT EXISTS dialogue_conversation ON agent_dialogue(agent_id,conversation_id,id)')
             for column,definition in (('personality',"TEXT NOT NULL DEFAULT ''"),('voice_settings',"TEXT NOT NULL DEFAULT '{}'")):
                 if column not in columns:db.execute('ALTER TABLE agent_profiles ADD COLUMN '+column+' '+definition)
             for agent_id,profile in PROFILES.items():
@@ -105,6 +120,7 @@ class AgentMemoryStore:
                     # Migrate old placeholder identities while preserving a user-edited specialty.
                     old=dict(existing);specialty=old.get('specialty') or profile['specialty']
                     if str(old.get('display_name','')).startswith('咕嘎 00'):specialty=profile['specialty']
+                    if agent_id=='001' and specialty=='综合分析、通用任务、电脑操作与项目监督':specialty=profile['specialty']
                     personality=old.get('personality') or PERSONALITIES[agent_id]
                     voices=old.get('voice_settings')
                     if not voices or voices=='{}':voices=json.dumps(VOICES[agent_id])
@@ -145,26 +161,32 @@ class AgentMemoryStore:
             (specialty,expression,role,time.time(),personality,voices,str(agent_id)))
         return self.profile(agent_id)
 
-    def add_dialogue(self,agent_id,role,content):
+    def add_dialogue(self,agent_id,role,content,conversation_id=None,project_id=None):
         text=safe_text(content)
         if not text:return
         with self.connect() as db:
-            previous=db.execute('SELECT role,content FROM agent_dialogue WHERE agent_id=? ORDER BY id DESC LIMIT 1',(str(agent_id),)).fetchone()
-            db.execute('INSERT INTO agent_dialogue(agent_id,role,content,created) VALUES (?,?,?,?)',
-                (str(agent_id),str(role),text,time.time()))
+            previous=db.execute('SELECT role,content FROM agent_dialogue WHERE agent_id=? AND conversation_id=? ORDER BY id DESC LIMIT 1',
+                                (str(agent_id),str(conversation_id or ''))).fetchone()
+            db.execute('INSERT INTO agent_dialogue(agent_id,role,content,created,conversation_id,project_id) VALUES (?,?,?,?,?,?)',
+                (str(agent_id),str(role),text,time.time(),str(conversation_id or ''),str(project_id or '')))
             if role=='user':
                 context=previous['content'] if previous and previous['role']=='assistant' else ''
                 for kind,fact in profile_facts(content,context):
-                    db.execute('DELETE FROM agent_facts WHERE agent_id=? AND kind=?',(str(agent_id),kind))
-                    db.execute('INSERT INTO agent_facts(agent_id,kind,content,importance,created) VALUES (?,?,?,?,?)',
-                        (str(agent_id),kind,fact,4,time.time()))
+                    db.execute("DELETE FROM agent_facts WHERE agent_id=? AND kind=? AND scope='user'",(str(agent_id),kind))
+                    db.execute("INSERT INTO agent_facts(agent_id,kind,content,importance,created,scope,source_conversation) VALUES (?,?,?,?,?,'user',?)",
+                        (str(agent_id),kind,fact,4,time.time(),str(conversation_id or '')))
 
-    def remember(self,agent_id,content,kind='note',importance=2):
+    def remember(self,agent_id,content,kind='note',importance=2,scope='agent',scope_id='',source_conversation=''):
         text=safe_text(content)
         if not text:raise ValueError('记忆内容不能为空')
         importance=max(1,min(5,int(importance)))
-        with self.connect() as db:db.execute('INSERT INTO agent_facts(agent_id,kind,content,importance,created) VALUES (?,?,?,?,?)',
-            (str(agent_id),str(kind),text,importance,time.time()))
+        if scope not in ('agent','user','project','conversation'):raise ValueError('未知记忆层级')
+        if scope in ('project','conversation') and not scope_id:raise ValueError('项目或对话记忆需要明确来源')
+        with self.connect() as db:
+            if db.execute('SELECT 1 FROM agent_facts WHERE agent_id=? AND kind=? AND content=? AND scope=? AND scope_id=?',
+                          (str(agent_id),str(kind),text,scope,str(scope_id))).fetchone():return
+            db.execute('INSERT INTO agent_facts(agent_id,kind,content,importance,created,scope,scope_id,source_conversation) VALUES (?,?,?,?,?,?,?,?)',
+                (str(agent_id),str(kind),text,importance,time.time(),scope,str(scope_id),str(source_conversation or '')))
 
     def shared_turn(self,speaker,role,content):
         text=safe_text(content)
@@ -177,43 +199,61 @@ class AgentMemoryStore:
             count=db.execute('DELETE FROM agent_facts WHERE agent_id=? AND id=?',(str(agent_id),int(ident))).rowcount
         return dict(deleted=bool(count))
 
-    def facts(self,agent_id,limit=30):
-        with self.connect() as db:
-            return [dict(r) for r in db.execute('SELECT id,kind,content,importance FROM agent_facts WHERE agent_id=? ORDER BY id DESC LIMIT ?',
-                                              (str(agent_id),max(1,min(100,int(limit)))))]
+    @staticmethod
+    def _scope_filter(conversation_id=None,project_id=None):
+        sql="(scope IN ('agent','user')"
+        values=[]
+        for scope,ident in (('conversation',conversation_id),('project',project_id)):
+            if ident:
+                sql+=' OR (scope=? AND scope_id=?)';values.extend((scope,str(ident)))
+        return sql+')',values
 
-    def recent_dialogue(self,agent_id,limit=12):
-        with self.connect() as db:rows=list(db.execute('SELECT role,content,created FROM agent_dialogue WHERE agent_id=? ORDER BY id DESC LIMIT ?',(str(agent_id),int(limit))))
+    def facts(self,agent_id,limit=30,conversation_id=None,project_id=None):
+        condition,values=self._scope_filter(conversation_id,project_id)
+        with self.connect() as db:
+            return [dict(r) for r in db.execute('SELECT id,kind,content,importance,scope,scope_id,source_conversation,created FROM agent_facts WHERE agent_id=? AND '+condition+' ORDER BY id DESC LIMIT ?',
+                                              [str(agent_id),*values,max(1,min(100,int(limit)))])]
+
+    def recent_dialogue(self,agent_id,limit=12,conversation_id=None):
+        if not conversation_id:return []
+        with self.connect() as db:rows=list(db.execute('SELECT role,content,created FROM agent_dialogue WHERE agent_id=? AND conversation_id=? ORDER BY id DESC LIMIT ?',
+                                                      (str(agent_id),str(conversation_id),max(1,min(100,int(limit))))))
         return [dict(r) for r in reversed(rows)]
 
-    def recall(self,agent_id,query='',limit=6):
+    def recall(self,agent_id,query='',limit=6,include_dialogue=False,conversation_id=None,project_id=None):
+        """Only stable facts by default. Raw chat history is NOT a memory:
+        pulling old error reports into a new call is what made the pet bring
+        up previous failures as if they were things the user had said."""
         q=_tokens(query)
+        condition,values=self._scope_filter(conversation_id,project_id)
         with self.connect() as db:
-            facts=[dict(r) for r in db.execute('SELECT * FROM agent_facts WHERE agent_id=? ORDER BY importance DESC,created DESC LIMIT 120',(str(agent_id),))]
-            dialogue=[dict(r) for r in db.execute('SELECT role,content,created FROM agent_dialogue WHERE agent_id=? ORDER BY id DESC LIMIT 40',(str(agent_id),))]
+            facts=[dict(r) for r in db.execute('SELECT * FROM agent_facts WHERE agent_id=? AND '+condition+' ORDER BY importance DESC,created DESC LIMIT 120',[str(agent_id),*values])]
+        dialogue=self.recent_dialogue(agent_id,40,conversation_id) if include_dialogue and conversation_id else []
         scored=[]
         now=time.time()
         for i,item in enumerate(facts):
             text=item['content'];overlap=len(q & _tokens(text)) if q else 0
+            # Unrelated task notes must not displace stable owner facts in a new topic.
+            if q and not overlap and not (item['scope']=='user' or item['kind'].startswith('profile:')):continue
             score=int(item['importance'])*4+overlap*8+(1/(1+i))
-            scored.append((score,item['kind'],text,'fact'))
+            scored.append((score,item['kind'],text,'fact',item['scope'],item['created'],item['id'],item['source_conversation']))
         for item in dialogue:
             text=item['content'];overlap=len(q & _tokens(text)) if q else 0
             age=(now-float(item['created'] or now))/86400
             score=overlap*7+max(0,3-age)*.5+(1 if item['role']=='user' else 0)
-            scored.append((score,'dialogue',text,item['role']))
+            scored.append((score,'dialogue',text,item['role'],'conversation',item['created'],None,str(conversation_id)))
         scored.sort(reverse=True,key=lambda x:x[0]);out=[];seen=set()
-        for score,kind,text,role in scored:
+        for score,kind,text,role,scope,created,ident,source in scored:
             key=text.casefold()
             if key in seen:continue
-            seen.add(key);out.append(dict(kind=kind,role=role,content=text[:1600],score=round(score,2)))
+            seen.add(key);out.append(dict(id=ident,kind=kind,role=role,scope=scope,content=text[:1600],created=created,
+                                         source_conversation=source,score=round(score,2)))
             if len(out)>=limit:break
         return out
 
-    def proactive_topics(self,agent_id,limit=4):
-        with self.connect() as db:
-            rows=list(db.execute("SELECT content,created FROM agent_dialogue WHERE agent_id=? AND role='user' ORDER BY id DESC LIMIT 16",(str(agent_id),)))
-            facts=list(db.execute("SELECT content,created FROM agent_facts WHERE agent_id=? ORDER BY importance DESC,created DESC LIMIT 12",(str(agent_id),)))
+    def proactive_topics(self,agent_id,limit=4,conversation_id=None,project_id=None):
+        rows=[r for r in self.recent_dialogue(agent_id,16,conversation_id) if r['role']=='user']
+        facts=self.facts(agent_id,12,conversation_id,project_id)
         topics=[safe_text(r['content'])[:500] for r in rows if len(safe_text(r['content']))>=4]
         topics[:0]=[safe_text(r['content'])[:500] for r in facts if len(safe_text(r['content']))>=4]
         out=[]

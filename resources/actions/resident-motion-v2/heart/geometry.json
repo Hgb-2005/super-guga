@@ -1,0 +1,23 @@
+{
+  "name": "heart",
+  "frames": 239,
+  "native_fps": 24.0,
+  "canvas": [
+    320,
+    416
+  ],
+  "body_span": 304.5,
+  "reference_body_span": 304.3612334801762,
+  "baseline": 408,
+  "source": "runtime\\idle-action-review-20261102\\heart-v1\\frames",
+  "scale": 0.6009106287861328,
+  "offset": [
+    24,
+    40
+  ],
+  "edge_clipped_frames": 0,
+  "frame_sha256": "0792927a0d897ad98cb02f6b07ad205fb9939b5ff2e4902fc35ca53f2a6fb2fb",
+  "source_pixels_preserved": true,
+  "reference_width": 245,
+  "native_motion": true
+}

@@ -149,13 +149,15 @@ class FloatingTests(unittest.TestCase):
         tools.selection_bar.dismiss()
         with patch('ui.selection_snapshot.snapshot',return_value=(self.image(),QPoint(200,180),self.image())),patch('core.screen_question.selected_text',return_value={'text':'接口','bounds':[180,160,80,30]}) as lookup:
             tools._selection_candidate(dict(hwnd=123,x=220,y=180,selection_gesture=True))
-            self.pump(lambda:tools.selection_bar.isVisible());lookup.assert_called_once_with(123)
+            self.pump(lambda:tools.selection_bar.isVisible());lookup.assert_called_once_with(123,220,180)
         self.assertIn('image_url',tools.selection_bar.payload)
         with patch('core.computer_control._attach_focus') as focus,patch('core.computer_control._send_keys') as keys,patch('core.screen_question.explain',return_value='所选词是“接口”，表示程序之间的调用入口。') as model:
             tools.selection_bar.pick('explain');self.pump(lambda:tools.popup is not None and not tools.popup.pending)
             focus.assert_not_called();keys.assert_not_called()
-            self.assertIsInstance(model.call_args.args[0][0]['content'],list)
-        self.assertTrue(tools.popup.preview.isVisible());tools.popup.close()
+            self.assertIsInstance(model.call_args.args[0][0]['content'],str)
+            self.assertIn('接口',model.call_args.args[0][-1]['content'])
+            self.assertNotIn('image_url',json.dumps(model.call_args.args[0]))
+        self.assertFalse(tools.popup.preview.isVisible());tools.popup.close()
         self.assertEqual(tools.popup.messages,[]);self.assertIsNone(tools.popup.preview.pixmap())
 
     def test_nontext_drag_does_not_show_selection_bar_or_call_model(self):
@@ -177,7 +179,7 @@ class FloatingTests(unittest.TestCase):
     def test_text_toolbar_has_explain_and_screenshot_analysis(self):
         from PyQt5.QtWidgets import QPushButton
         labels=[b.text() for b in self.pet._screen_tools.selection_bar.findChildren(QPushButton)]
-        self.assertIn('解释',labels);self.assertIn('截图分析',labels);self.assertNotIn('翻译',labels)
+        self.assertIn('解释',labels);self.assertIn('截图提问',labels);self.assertNotIn('翻译',labels)
 
     def test_pet_menu_exposes_natural_videos_and_drops_legacy_shapes(self):
         from PyQt5.QtWidgets import QMenu
@@ -312,5 +314,194 @@ class FloatingTests(unittest.TestCase):
             self.assertIsNotNone(model.call_args.kwargs['image_url'])
         self.assertIsNone(tools.capture);self.assertIsNone(p._pending_image);p.busy=False;p._task_heartbeat_timer.stop()
 
+
+    def test_voice_click_does_not_finish_when_mouse_released(self):
+        bubble=self.pet._agent_bubble;bubble.set_voice_state('idle')
+        with patch.object(self.panel,'start_bubble_short_voice',return_value=True) as start,patch.object(self.panel,'finish_bubble_short_voice') as finish:
+            QTest.mouseClick(bubble.talk_button,Qt.LeftButton)
+            start.assert_called_once();finish.assert_not_called()
+            self.assertEqual(bubble._voice_state,'preparing')
+            bubble.set_voice_state('recording')
+            QTest.mouseClick(bubble.talk_button,Qt.LeftButton)
+            finish.assert_called_once_with(False)
+            self.assertEqual(bubble._voice_state,'transcribing')
+        bubble.set_voice_state('idle')
+
+    def test_cancel_clicked_recording_never_submits(self):
+        bubble=self.pet._agent_bubble;bubble.set_voice_state('recording')
+        with patch.object(self.panel,'finish_bubble_short_voice') as finish:
+            bubble.cancel_button.click();finish.assert_called_once_with(True)
+        self.assertEqual(bubble._voice_state,'idle')
+
+    def test_hide_pet_leaves_launcher_and_chat_does_not_restore_pet(self):
+        pet=self.pet;p=self.panel
+        try:
+            with patch.object(p.agent,'cancel') as cancel,patch.object(p.runtime.dsh,'stop') as stop:
+                pet.set_pet_hidden(True);APP.processEvents()
+                self.assertFalse(pet.isVisible());self.assertTrue(pet._floating_launcher.isVisible())
+                pet._floating_launcher.chat.click();APP.processEvents()
+                self.assertTrue(p.isVisible());self.assertFalse(pet.isVisible())
+                cancel.assert_not_called();stop.assert_not_called()
+                pet._show_agent_bubble('隐藏时仍有新消息')
+                self.assertIn('消息',pet._floating_launcher.chat.text())
+                self.assertFalse(pet._agent_bubble.isVisible())
+        finally:pet.set_pet_hidden(False);p.hide()
+
+    def test_hidden_launcher_is_removed_and_restored_for_screenshot(self):
+        pet=self.pet;tools=pet._screen_tools
+        try:
+            pet.set_pet_hidden(True)
+            with patch.object(tools,'_capture'):
+                tools.begin('region_ask')
+                self.assertFalse(pet._floating_launcher.isVisible())
+                QTest.qWait(180)
+            tools._capture_pending=False;tools._restore()
+            self.assertTrue(pet._floating_launcher.isVisible());self.assertFalse(pet.isVisible())
+        finally:tools._capture_pending=False;pet.set_pet_hidden(False)
+
+    def test_right_click_source_keeps_native_menu_input(self):
+        import ctypes,os
+        from core.selection_watcher import SelectionWatcher,MouseInfo
+        watcher=SelectionWatcher();info=MouseInfo();info.pt.x=220;info.pt.y=180
+        def external_pid(hwnd,pointer):ctypes.cast(pointer,ctypes.POINTER(ctypes.c_ulong)).contents.value=os.getpid()+1
+        with patch('ctypes.windll.user32.WindowFromPoint',return_value=42),patch('ctypes.windll.user32.GetAncestor',return_value=123),patch('ctypes.windll.user32.GetForegroundWindow',return_value=999),patch('ctypes.windll.user32.GetWindowThreadProcessId',side_effect=external_pid),patch('ctypes.windll.user32.CallNextHookEx',return_value=7) as next_hook:
+            self.assertEqual(watcher.callback(0,0x0204,ctypes.addressof(info)),7)
+            self.assertEqual(watcher.callback(0,0x0205,ctypes.addressof(info)),7)
+        self.assertEqual(watcher.queue[-1]['hwnd'],123)
+        self.assertTrue(watcher.queue[-1]['right_click']);self.assertEqual(next_hook.call_count,2)
+
+    def test_click_text_starts_recording_and_only_arrow_submits(self):
+        p=self.panel;bubble=self.pet._agent_bubble
+        class Recorder:
+            available=True;error=None;level=.4
+            def start(self):pass
+            def stop(self):return '接口是什么'
+        previous=p.short_voice.recorder;p.short_voice.recorder=Recorder();bubble.set_voice_state('idle')
+        try:
+            with patch.object(p.answer,'start') as answer,patch('ui.agent_chat.AgentRealtimeVoice') as cloud,patch.object(p.pet._tts,'speak') as speak:
+                QTest.mouseClick(bubble.talk_hint,Qt.LeftButton)
+                self.pump(lambda:bubble._voice_state=='recording')
+                answer.assert_not_called();cloud.assert_not_called()
+                QTest.mouseClick(bubble.talk_button,Qt.LeftButton)
+                self.pump(lambda:answer.called)
+                self.assertTrue(answer.call_args.kwargs['read_aloud'])
+                p._completed(dict(kind='answer',conversation_id=p.active_id,ok=True,text='接口是程序之间沟通的入口。',expression='normal',action='none',read_aloud=True))
+                self.assertEqual(speak.call_args.args[0],'接口是程序之间沟通的入口。')
+        finally:
+            p.short_voice.stop(cancel=True)
+            self.pump(lambda:not p.short_voice._worker.is_alive())
+            p.short_voice.recorder=previous
+
+    def test_chat_has_one_dictation_entry_and_same_recording_surface(self):
+        p=self.panel
+        self.assertFalse(hasattr(p,'local_voice_button'))
+        with patch.object(p.short_voice,'start',return_value=True) as start:
+            p.short_voice_button.click();start.assert_called_once()
+        p._short_voice_state('recording')
+        self.assertFalse(p.voice_record_bar.isHidden());self.assertTrue(p.short_voice_button.isHidden())
+        self.assertEqual(p.voice_record_bar.phase,'recording')
+        with patch.object(p,'finish_bubble_short_voice') as finish:
+            p.voice_record_bar.cancel_button.click();finish.assert_called_once_with(True)
+        p._short_voice_state('idle')
+        self.assertTrue(p.voice_record_bar.isHidden());self.assertFalse(p.short_voice_button.isHidden())
+
+    def test_rejected_realtime_during_recording_does_not_cancel_jobs(self):
+        p=self.panel;p.short_voice.active=True
+        try:
+            with patch.object(p.agent,'cancel') as cancel,patch.object(p.runtime.dsh,'stop') as dsh_stop:
+                p.voice_button.setChecked(True)
+                self.assertFalse(p.voice_button.isChecked());self.assertTrue(p.short_voice.active)
+                cancel.assert_not_called();dsh_stop.assert_not_called()
+        finally:p.short_voice.active=False
+
+    def test_left_selection_bar_is_independent_of_hidden_pet(self):
+        bar=self.pet._screen_tools.selection_bar
+        self.assertIsNone(bar.parentWidget())
+        bar.present(dict(text='选中的文字'),QPoint(200,150))
+        self.pet.hide();APP.processEvents()
+        self.assertTrue(bar.isVisible())
+        bar.dismiss();self.pet.show()
+
+    def test_text_selection_survives_screenshot_failure(self):
+        tools=self.pet._screen_tools;tools.selection_enabled=True
+        with patch('ui.selection_snapshot.snapshot',side_effect=RuntimeError('capture unavailable')),patch('ui.selection_snapshot.logical_point',return_value=QPoint(200,150)):
+            tools._cache_selection(dict(hwnd=123,x=200,y=150),tools.selection_capture_sequence,dict(text='接口'))
+            self.assertTrue(tools.selection_bar.isVisible());self.assertEqual(tools.selection_bar.payload['text'],'接口')
+        tools.selection_bar.dismiss()
+
+    def test_selection_priority_is_topmost_without_keyboard_activation(self):
+        import ctypes
+        bar=self.pet._screen_tools.selection_bar;bar.present(dict(text='接口'),QPoint(200,150))
+        with patch('ui.screen_tools.QApplication.platformName',return_value='windows'),patch('ctypes.windll.user32.SetWindowPos') as position:
+            bar.prioritize()
+            self.assertEqual(position.call_args.args[1],-1)
+            self.assertTrue(position.call_args.args[-1]&0x0010)
+        bar.dismiss()
+
+    def test_recorded_fast_command_keeps_edge_reply(self):
+        p=self.panel;p.voice_active=False
+        with patch.object(p.pet._tts,'speak') as speak:
+            p._short_transcript('查看每日计划')
+            self.assertTrue(speak.called)
+
+    def test_edge_transport_keeps_microsoft_and_existing_custom_endpoint(self):
+        import importlib
+        from urllib.parse import urlsplit
+        from ui.tts_engine import configure_edge_transport
+        transport=importlib.import_module('edge_tts.communicate')
+        with patch.object(transport,'WSS_URL','wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=test'):
+            self.assertEqual(configure_edge_transport(),'api.msedgeservices.com')
+            self.assertEqual(urlsplit(transport.WSS_URL).scheme,'wss')
+            self.assertIn('Ocp-Apim-Subscription-Key=',transport.WSS_URL)
+        with patch.object(transport,'WSS_URL','wss://example.test/custom'):
+            self.assertEqual(configure_edge_transport(),'example.test')
+            self.assertEqual(transport.WSS_URL,'wss://example.test/custom')
+
+
+    def test_manual_voice_uses_driver_and_edge_while_long_call_stays_open(self):
+        p=self.panel;p.voice=MagicMock();p.voice.connected=True;p.voice_active=True
+        try:
+            with patch.object(p.short_voice,'start',return_value=True),patch.object(p.answer,'start') as answer,patch.object(p.pet._tts,'speak') as speak:
+                p.start_bubble_short_voice();p.voice.reserve_manual_microphone.assert_called_once()
+                p._short_transcript('接口是什么')
+                answer.assert_called_once();p.voice.submit_user_text.assert_not_called()
+                p._completed(dict(kind='answer',conversation_id=p.active_id,ok=True,text='接口是程序之间的连接方式。',expression='normal',action='none',read_aloud=True))
+                self.assertTrue(speak.called);p.voice.notify_battleground.assert_not_called();p.voice.stop.assert_not_called()
+                p._manual_resume_after=0;p._pending_tts_display=None;p._sync_manual_voice()
+                p.voice.resume_call_microphone.assert_called_once();self.assertTrue(p.voice_active)
+        finally:
+            p.voice_active=False;p.voice=None;p._manual_voice_turn=False;p._manual_voice_timer.stop();p.short_voice.before_start=None
+
+    def test_long_voice_failure_keeps_tasks_and_manual_voice_available(self):
+        p=self.panel;p.voice=MagicMock();p.voice_active=True
+        try:
+            with patch.object(p.agent,'cancel') as cancel,patch.object(p.runtime.dsh,'stop') as stop:
+                p._voice_error('HTTP 401')
+                cancel.assert_not_called();stop.assert_not_called();self.assertFalse(p.voice_active)
+                self.assertIn('仍可点击说话',p.status.text())
+            with patch.object(p.answer,'start') as answer,patch.object(p.pet._tts,'speak') as speak:
+                p._short_transcript('你好');answer.assert_called_once()
+                p._completed(dict(kind='answer',conversation_id=p.active_id,ok=True,text='本鹅在呢。',expression='normal',action='none',read_aloud=True))
+                self.assertTrue(speak.called)
+        finally:p.voice_active=False;p.voice=None;p._manual_voice_turn=False;p._manual_voice_timer.stop()
+
+    def test_real_uia_selection_can_use_control_bounds_when_range_bounds_missing(self):
+        from ui.screen_tools import ScreenTools
+        selected=dict(text='选中原文',selection_verified=True,element_bounds=[100,100,500,300])
+        self.assertTrue(ScreenTools.valid_selection_text(selected,dict(x=200,y=200,selection_gesture=True)))
+        self.assertFalse(ScreenTools.valid_selection_text(selected,dict(x=900,y=900,selection_gesture=True)))
+        self.assertFalse(ScreenTools.valid_selection_text(dict(text='旧文字'),dict(x=200,y=200,selection_gesture=True)))
+
+    def test_drag_start_can_validate_selection_when_release_is_in_margin(self):
+        from ui.screen_tools import ScreenTools
+        self.assertTrue(ScreenTools.valid_selection_text(dict(text='原文',bounds=[100,100,80,20]),dict(x=400,y=110,start_x=110,start_y=110)))
+
+    def test_passive_compatibility_reader_never_changes_foreground(self):
+        from ui.selection_clipboard import SelectionCopy
+        reader=SelectionCopy();results=[];reader.done.connect(results.append)
+        with patch('ctypes.windll.user32.IsWindow',return_value=True),patch('ctypes.windll.user32.GetForegroundWindow',return_value=321),patch('core.computer_control._attach_focus') as focus,patch('core.computer_control._send_keys') as keys:
+            reader.read(123,passive=True)
+            self.assertFalse(results[-1]['ok']);focus.assert_not_called();keys.assert_not_called()
+        reader.stop()
 
 if __name__=='__main__':unittest.main()
